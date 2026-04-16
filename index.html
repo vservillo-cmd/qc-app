@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QC Tablet Pilot</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://unpkg.com/html5-qrcode" defer></script>
+  <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div id="loginView" class="center-wrap">
+    <div class="card login-card">
+      <h1>QC Tablet Pilot</h1>
+      <p class="muted">Login demo</p>
+      <label>Utente</label>
+      <input id="loginUser" type="text" value="qualita1" />
+      <label>Password</label>
+      <input id="loginPass" type="password" value="1234" />
+      <button id="btnLogin" class="primary full" onclick="login()">Entra</button>
+      <div id="loginMsg" class="msg"></div>
+      <div class="demo-box">
+        <strong>Credenziali demo</strong><br>
+        qualita1 / 1234
+      </div>
+    </div>
+  </div>
+
+  <div id="appView" class="hidden">
+    <header class="topbar">
+      <div>
+        <h1>QC Tablet - Operatrice Controllo Qualità</h1>
+        <div class="subline"><span id="loggedUser"></span> · <span id="todayDate"></span></div>
+        <div class="sync-panel">
+          <div class="sync-line">
+            <span class="sync-dot" id="syncDot"></span>
+            <strong id="syncLabel">Sincronizzato</strong>
+            <button id="btnRetrySync" class="secondary sync-retry hidden" type="button">Riprova sync</button>
+          </div>
+          <div id="syncDetail" class="sync-detail">Nessun controllo in attesa.</div>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button id="btnExportCsv" class="secondary">Esporta dati</button>
+        <button id="btnExportKpi" class="secondary">Esporta KPI</button>
+        <button id="btnPrint" class="secondary">Stampa</button>
+        <button id="btnImportAnagrafiche" class="secondary">Importa Anagrafiche</button>
+        <input id="importAnagraficheFile" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" class="hidden" />
+        <button id="btnLogout" class="danger">Esci</button>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="card">
+        <h2>Nuovo controllo</h2>
+
+        <div class="top-row-grid">
+          <div class="field-stack field-turno">
+            <label>Turno</label>
+            <select id="shift">
+              <option>1</option>
+              <option>2</option>
+              <option>3</option>
+              <option>Centrale</option>
+            </select>
+          </div>
+
+          <div class="field-stack field-postazione">
+            <label>Postazione</label>
+            <select id="workstationSelect">
+              <option value="">Seleziona</option>
+            </select>
+          </div>
+
+          <div class="field-stack field-tipo">
+            <label>Tipo cucitura</label>
+            <input id="stitchTypeAuto" type="text" readonly />
+          </div>
+
+          <div class="field-stack field-linea">
+            <label>Linea lavorazione</label>
+            <select id="lineaSelect">
+              <option value="">Seleziona</option>
+            </select>
+          </div>
+
+          <div class="field-stack field-lotto">
+            <label>Lotto</label>
+            <input id="lot" type="text" />
+          </div>
+
+          <div class="field-stack field-codice">
+            <label>Codice prodotto</label>
+            <select id="setupCodeSelect">
+              <option value="">Seleziona</option>
+            </select>
+          </div>
+
+          <div class="field-stack field-particolare">
+            <label class="nowrap">Particolare in produzione</label>
+            <input id="particularAuto" type="text" readonly />
+          </div>
+        </div>
+
+        <div class="second-row-grid">
+          <div class="field-stack">
+            <label>Nuova postazione</label>
+            <input id="workstationNew" class="sub-input" type="text" placeholder="Solo se non presente" />
+          </div>
+
+          <div class="field-stack">
+            <label>Nuovo tipo cucitura</label>
+            <input id="stitchTypeNew" class="sub-input" type="text" placeholder="Solo se diverso" />
+          </div>
+
+          <div class="field-stack">
+            <label>Nuova linea</label>
+            <input id="lineaNew" class="sub-input" type="text" placeholder="Solo se non presente" />
+          </div>
+
+          <div class="field-stack">
+            <label>Nuovo codice prodotto</label>
+            <input id="setupCodeNew" class="sub-input" type="text" placeholder="Solo se non presente" />
+          </div>
+
+          <div class="field-stack">
+            <label>Nuovo particolare</label>
+            <input id="particularNew" class="sub-input" type="text" placeholder="Solo se diverso o non presente" />
+          </div>
+        </div>
+
+        <h3>Misure</h3>
+        <div id="toleranceInfo" class="muted small-note"></div>
+        <div class="grid measure-grid">
+          <div>
+            <label class="nowrap">Bordo cucitura <span class="unit">(mm)</span></label>
+            <input id="measureBorder" type="number" step="0.1" />
+          </div>
+          <div>
+            <label>Esito</label>
+            <input id="measureBorderStatus" type="text" readonly placeholder="OK / KO" />
+          </div>
+          <div>
+            <label>Passo punto</label>
+            <input id="measurePitch" type="number" step="0.1" />
+          </div>
+          <div>
+            <label>Esito</label>
+            <input id="measurePitchStatus" type="text" readonly placeholder="OK / KO" />
+          </div>
+          <div>
+            <label class="nowrap">Disallineamento tacche <span class="unit">(mm)</span></label>
+            <input id="measureNotch" type="number" step="0.1" />
+          </div>
+          <div>
+            <label>Esito</label>
+            <input id="measureNotchStatus" type="text" readonly placeholder="OK / KO" />
+          </div>
+        </div>
+
+        <h3>Controlli qualitativi</h3>
+        <div class="grid cols-3">
+          <div>
+            <label>Fermapunto</label>
+            <select id="qualityStop"><option>OK</option><option>KO</option></select>
+          </div>
+          <div>
+            <label>Punti saltati</label>
+            <select id="qualitySkipped"><option>OK</option><option>KO</option></select>
+          </div>
+          <div>
+            <label>Ago spuntato</label>
+            <select id="qualityNeedle"><option>OK</option><option>KO</option></select>
+          </div>
+        </div>
+
+        <h3>Materiali e settaggi</h3>
+        <div class="grid materials-grid">
+          <div>
+            <label>Codice filato ago</label>
+            <select id="threadNeedle">
+              <option value="">Seleziona</option>
+            </select>
+          </div>
+          <div>
+            <label>Esito</label>
+            <input id="threadNeedleStatus" type="text" readonly placeholder="OK / KO" />
+          </div>
+          <div>
+            <label>Codice filato crochet</label>
+            <select id="threadCrochet">
+              <option value="">Seleziona</option>
+            </select>
+          </div>
+          <div>
+            <label>Esito</label>
+            <input id="threadCrochetStatus" type="text" readonly placeholder="OK / KO" />
+          </div>
+          <div>
+            <label>Ago</label>
+            <select id="needleType">
+              <option value="">Seleziona</option>
+            </select>
+          </div>
+          <div>
+            <label>Esito</label>
+            <input id="needleTypeStatus" type="text" readonly placeholder="OK / KO" />
+          </div>
+          <div>
+            <label>Cambio ago</label>
+            <select id="needleChange"><option>NO</option><option>SI</option></select>
+          </div>
+        </div>
+
+        <h3>Note</h3>
+        <div class="grid cols-note">
+          <div>
+            <label>Note</label>
+            <textarea id="notes" rows="4"></textarea>
+          </div>
+          <div>
+            <label>Esito note</label>
+            <select id="notesStatus"><option>OK</option><option>KO</option></select>
+          </div>
+        </div>
+
+        <div class="actions-row">
+          <button id="btnSave" class="success">Salva controllo</button>
+          <div id="saveMsg" class="msg"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>KPI rapidi</h2>
+        <div class="kpi-grid">
+          <div class="kpi-card"><div class="kpi-label">Controlli totali</div><div id="kpiTotalControls" class="kpi-value">0</div></div>
+          <div class="kpi-card"><div class="kpi-label">Controlli KO</div><div id="kpiTotalKo" class="kpi-value">0</div></div>
+          <div class="kpi-card"><div class="kpi-label">% KO</div><div id="kpiKoRate" class="kpi-value">0%</div></div>
+          <div class="kpi-card"><div class="kpi-label">Anomalie aperte</div><div id="kpiOpenAnomalies" class="kpi-value">0</div></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Storico controlli</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Data/Ora</th>
+              <th>Qualità</th>
+              <th>Turno</th>
+              <th>Postazione</th>
+              <th>Lotto</th>
+              <th>Esito</th>
+              <th>Stato</th>
+              <th>Badge macchinista</th>
+              <th>Azioni</th>
+            </tr>
+          </thead>
+          <tbody id="historyBody"></tbody>
+        </table>
+      </section>
+
+      <section class="card">
+        <h2>Anomalie</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Aperta il</th>
+              <th>Lotto</th>
+              <th>Tipo</th>
+              <th>Severità</th>
+              <th>Stato</th>
+            </tr>
+          </thead>
+          <tbody id="anomalyBody"></tbody>
+        </table>
+      </section>
+    </main>
+  </div>
+
+  <div id="detailModal" class="modal hidden">
+    <div class="modal-card wide">
+      <div class="modal-header">
+        <h3>Dettagli controllo</h3>
+        <button class="secondary" onclick="closeDetailModal()">Chiudi</button>
+      </div>
+      <div id="detailContent" class="detail-grid"></div>
+    </div>
+  </div>
+
+  <div id="attestModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Attestazione operatrice macchina</h3>
+        <button class="secondary" onclick="closeAttestModal()">Chiudi</button>
+      </div>
+      <p class="muted">Usa il QR se disponibile. Se la lettura non va, conferma dal campo manuale.</p>
+      <div class="qr-actions">
+        <button id="btnStartScan" class="primary">Avvia scansione</button>
+        <button id="btnStopScan" class="secondary">Ferma</button>
+      </div>
+      <div id="scanStatus" class="msg">Stato: pronto</div>
+      <div id="reader"></div>
+      <div class="manual-box">
+        <label>Macchinista da elenco</label>
+        <select id="machineBadgeSelect"><option value="">Seleziona badge</option></select>
+        <label>Codice badge / QR</label>
+        <input id="manualBadge" type="text" placeholder="Es. MAC003 oppure BADGE=MAC003" />
+        <label>Nuova macchinista (solo se non presente)</label>
+        <input id="manualMachineName" type="text" placeholder="Nome Cognome" />
+        <label>Nuovo badge macchinista</label>
+        <input id="manualMachineBadgeNew" type="text" placeholder="Badge se nuova" />
+        <button id="btnConfirmBadge" class="success">Conferma codice</button>
+      </div>
+      <div class="demo-box">
+        <strong>Codici demo validi</strong>
+        <ul>
+          <li>MAC001 — Anna Rossi</li>
+          <li>MAC002 — Maria Bianchi</li>
+          <li>MAC003 — Giulia Esposito</li>
+        </ul>
+      </div>
+      <div id="scanResult" class="msg"></div>
+    </div>
+  </div>
+</body>
+</html>
