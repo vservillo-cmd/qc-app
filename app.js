@@ -1,7 +1,5 @@
 
-const USERS = {
-  "qualita1": { password: "1234", name: "Operatrice Controllo Qualità 1" }
-};
+let systemUsers = {};
 
 const BADGES = {
   "MAC001": "Anna Rossi",
@@ -12,7 +10,9 @@ const BADGES = {
 let currentUser = null;
 let controls = [];
 let anomalies = [];
+let gammaOrders = [];
 let currentAttestControlId = null;
+let currentAnomalyId = null;
 let html5QrCode = null;
 let scannerRunning = false;
 
@@ -39,6 +39,27 @@ function todayString() {
 function dateTimeString() {
   return new Date().toLocaleString("it-IT");
 }
+function setFastChoiceValue(targetId, value) {
+  const input = $(targetId);
+  if (!input) return;
+  input.value = value || "";
+  document.querySelectorAll(`.fast-choice[data-target="${targetId}"] .choice-btn`).forEach((btn) => {
+    btn.classList.toggle("active", String(btn.dataset.value || "") === String(value || ""));
+  });
+}
+function initFastChoices() {
+  document.querySelectorAll('.fast-choice').forEach((group) => {
+    const targetId = group.dataset.target;
+    const defaultValue = group.dataset.default || "";
+    group.querySelectorAll('.choice-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        setFastChoiceValue(targetId, btn.dataset.value || "");
+      });
+    });
+    const current = $(targetId)?.value || defaultValue;
+    setFastChoiceValue(targetId, current);
+  });
+}
 function getSyncEndpoint() {
   return (localStorage.getItem("qc_sync_endpoint") || DEFAULT_SYNC_ENDPOINT || "").trim();
 }
@@ -48,13 +69,28 @@ function saveStorage() {
   localStorage.setItem("qc_master_data", JSON.stringify(masterData));
   localStorage.setItem("qc_sync_queue", JSON.stringify(syncQueue));
   localStorage.setItem("qc_sync_meta", JSON.stringify(syncMeta));
+  localStorage.setItem("qc_gamma_orders", JSON.stringify(gammaOrders));
 }
 function loadStorage() {
   controls = JSON.parse(localStorage.getItem("qc_controls") || "[]");
-  anomalies = JSON.parse(localStorage.getItem("qc_anomalies") || "[]");
-  masterData = JSON.parse(localStorage.getItem("qc_master_data") || '{"postazioni":[],"linee":[],"codici":[],"macchiniste":[],"lineeDettaglio":{},"postazioneToLinea":{},"tolleranze":{}}');
+  anomalies = JSON.parse(localStorage.getItem("qc_anomalies") || "[]").map(a => ({
+    actions: [],
+    status: "Aperta",
+    ...a,
+    actions: Array.isArray(a.actions) ? a.actions : []
+  }));
+  // reset rigoroso a ogni avvio: Gamma e QC non vengono considerati caricati
+  masterData = {
+    postazioni: [], linee: [], codici: [], macchiniste: [],
+    lineeDettaglio: {}, postazioneToLinea: {}, tolleranze: {}, materialiSettings: {}
+  };
   syncQueue = JSON.parse(localStorage.getItem("qc_sync_queue") || "[]");
   syncMeta = JSON.parse(localStorage.getItem("qc_sync_meta") || '{"lastError":"","lastAttemptAt":null,"lastSuccessAt":null}');
+  gammaOrders = [];
+  try {
+    localStorage.removeItem("qc_master_data");
+    localStorage.removeItem("qc_gamma_orders");
+  } catch (e) {}
 }
 function queueControlForSync(control) {
   if (!control || !control.id) return;
@@ -77,46 +113,46 @@ function queueControlForSync(control) {
   scheduleSync();
 }
 function renderSyncStatus() {
-  const dot = $("syncDot");
-  const label = $("syncLabel");
-  const detail = $("syncDetail");
+  const pendingBadge = $("badgePending");
+  const storageBadge = $("badgeStorage");
+  const endpointBadge = $("badgeEndpoint");
   const retry = $("btnRetrySync");
-  if (!dot || !label || !detail || !retry) return;
+  if (!pendingBadge || !storageBadge || !endpointBadge || !retry) return;
 
-  dot.classList.remove("sync-ok","sync-pending","sync-error");
   const pending = syncQueue.length;
   const online = navigator.onLine !== false;
   const hasError = !!syncMeta.lastError;
+  const endpointConfigured = !!getSyncEndpoint();
+
+  pendingBadge.className = "top-badge";
+  storageBadge.className = "top-badge badge-neutral-soft";
+  endpointBadge.className = "top-badge badge-neutral-soft";
 
   if (hasError) {
-    dot.classList.add("sync-error");
-    label.textContent = "Errore sync";
-    detail.textContent = syncMeta.lastError;
+    pendingBadge.textContent = "Sync: errore";
+    pendingBadge.classList.add("badge-danger-soft");
+    storageBadge.textContent = "Salvataggio: locale";
+    endpointBadge.textContent = syncMeta.lastError;
+    endpointBadge.classList.add("badge-danger-soft");
     retry.classList.remove("hidden");
     return;
   }
 
   if (pending > 0) {
-    dot.classList.add("sync-pending");
-    label.textContent = `In attesa (${pending} controll${pending === 1 ? "o" : "i"})`;
-    if (!online) {
-      detail.textContent = `Offline: ${pending} controll${pending === 1 ? "o" : "i"} salvati in locale.`;
-    } else if (!getSyncEndpoint()) {
-      detail.textContent = `Salvati in locale. Endpoint sync non configurato.`;
-    } else if (syncInFlight) {
-      detail.textContent = `Sincronizzazione in corso...`;
-    } else {
-      detail.textContent = `In coda per la sincronizzazione.`;
-    }
-    retry.classList.toggle("hidden", !online || !getSyncEndpoint());
+    pendingBadge.textContent = `Attesa: ${pending}`;
+    pendingBadge.classList.add("badge-warning-soft");
+    storageBadge.textContent = online ? "Salvataggio: locale" : "Offline: locale";
+    endpointBadge.textContent = endpointConfigured ? (syncInFlight ? "Endpoint: sincronizzazione" : "Endpoint: pronto") : "Endpoint: OFF";
+    endpointBadge.classList.add(endpointConfigured ? "badge-success-soft" : "badge-neutral-soft");
+    retry.classList.toggle("hidden", !online || !endpointConfigured);
     return;
   }
 
-  dot.classList.add("sync-ok");
-  label.textContent = "Sincronizzato";
-  detail.textContent = syncMeta.lastSuccessAt
-    ? `Ultima sync OK: ${syncMeta.lastSuccessAt}`
-    : "Nessun controllo in attesa.";
+  pendingBadge.textContent = "Attesa: 0";
+  pendingBadge.classList.add("badge-success-soft");
+  storageBadge.textContent = syncMeta.lastSuccessAt ? `Ultima sync: ${syncMeta.lastSuccessAt}` : "Salvataggio: locale";
+  endpointBadge.textContent = endpointConfigured ? "Endpoint: pronto" : "Endpoint: OFF";
+  endpointBadge.classList.add(endpointConfigured ? "badge-success-soft" : "badge-neutral-soft");
   retry.classList.add("hidden");
 }
 function scheduleSync() {
@@ -183,6 +219,60 @@ async function attemptSync() {
     renderSyncStatus();
   }
 }
+
+function loadStoredUsers() {
+  systemUsers = JSON.parse(localStorage.getItem("qc_login_users") || "{}");
+}
+function saveStoredUsers(users, importedAt=null) {
+  systemUsers = users || {};
+  localStorage.setItem("qc_login_users", JSON.stringify(systemUsers));
+  if (importedAt) localStorage.setItem("qc_login_users_updated_at", importedAt);
+}
+function getStoredUsersUpdatedAt() {
+  return localStorage.getItem("qc_login_users_updated_at") || "";
+}
+function hasStoredUsers() {
+  return Object.keys(systemUsers || {}).length > 0;
+}
+function parseQcUsers(workbook) {
+  const userRows = sheetRows(workbook, ["controllo qualità","Controllo Qualità","Controllo_Qualita","Controllo Qualita"]);
+  if (!userRows.length) throw new Error("Foglio controllo qualità mancante o vuoto");
+  const users = {};
+  userRows.forEach((r) => {
+    const username = String(r["Utente"] || r.Utente || "").trim();
+    const password = String(r["Password"] ?? r.password ?? "").trim();
+    const active = String(r["Attiva (SI/NO)"] || r.Attiva || "SI").trim().toUpperCase();
+    if (!username) return;
+    if (!password) throw new Error(`Password mancante per utente ${username}`);
+    if (active !== "SI" && active !== "NO") throw new Error(`Valore Attiva non valido per utente ${username}`);
+    if (users[username]) throw new Error(`Utente duplicato: ${username}`);
+    if (active === "NO") return;
+    users[username] = {
+      password,
+      name: String(r["Nome e cognome"] || r.Nome || "").trim() || username,
+      badge: String(r["ID_Badge"] || r.Badge || "").trim()
+    };
+  });
+  if (!Object.keys(users).length) throw new Error("Nessun utente attivo trovato nel foglio controllo qualità");
+  return users;
+}
+function updateLoginScreenState() {
+  const bootstrap = $("bootstrapBox");
+  const loginForm = $("loginFormBox");
+  const info = $("loginUsersInfo");
+  if (!bootstrap || !loginForm || !info) return;
+  const usersReady = hasStoredUsers();
+  bootstrap.classList.toggle("hidden", usersReady);
+  loginForm.classList.toggle("hidden", !usersReady);
+  if (usersReady) {
+    const count = Object.keys(systemUsers).length;
+    const updatedAt = getStoredUsersUpdatedAt();
+    info.textContent = updatedAt ? `Utenti attivi: ${count} · Anagrafica aggiornata il ${updatedAt}` : `Utenti attivi: ${count}`;
+  } else {
+    info.textContent = "";
+  }
+}
+
 function normalizeCode(raw) {
   if (!raw) return "";
   const txt = String(raw).trim().toUpperCase();
@@ -201,6 +291,176 @@ function uniqueClean(arr) {
 }
 function splitAllowedValues(raw) {
   return uniqueClean(String(raw ?? "").split("/").map(v => v.trim()));
+}
+function parseDelimitedLine(line, delimiter=";") {
+  const out = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        cur += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === delimiter && !inQuotes) {
+      out.push(cur);
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  out.push(cur);
+  return out.map(v => String(v || "").trim());
+}
+function normalizeHeaderKey(value) {
+  return String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+function ensureSelectOption(selectId, value, label=null) {
+  const sel = $(selectId);
+  const normalized = String(value || "").trim();
+  if (!sel || !normalized) return;
+  if (![...sel.options].some(o => String(o.value || "").trim() === normalized)) {
+    const opt = document.createElement("option");
+    opt.value = normalized;
+    opt.textContent = label || normalized;
+    sel.appendChild(opt);
+  }
+  sel.value = normalized;
+}
+function getCurrentQcLine() {
+  return String(getSelectedLinea() || masterData.postazioneToLinea?.[$("workstationSelect")?.value] || "").trim();
+}
+function getSelectedGammaOrder() {
+  const lot = String($("lot")?.value || "").trim();
+  if (!lot) return null;
+  return gammaOrders.find(x => x.lotto === lot || x.idOrdine === lot) || null;
+}
+function toggleManualEntryPanel(forceOpen = null) {
+  const panel = $("manualEntryPanel");
+  const btn = $("btnToggleManualEntry");
+  if (!panel || !btn) return;
+  const shouldOpen = forceOpen === null ? panel.classList.contains("hidden") : !!forceOpen;
+  panel.classList.toggle("hidden", !shouldOpen);
+  btn.textContent = shouldOpen ? "− Nascondi inserimento manuale" : "+ Inserimento manuale";
+}
+function resetGammaDependentFields(keepLot=false) {
+  if (!keepLot && $("lot")) $("lot").value = "";
+  if ($("setupCodeSelect")) $("setupCodeSelect").value = "";
+  if ($("setupCodeNew")) $("setupCodeNew").value = "";
+  if ($("particularAuto")) $("particularAuto").value = "";
+  if ($("particularNew")) $("particularNew").value = "";
+  if ($("threadNeedle")) $("threadNeedle").value = "";
+  if ($("threadCrochet")) $("threadCrochet").value = "";
+  if ($("needleType")) $("needleType").value = "";
+  setStatusField("threadNeedleStatus", "");
+  setStatusField("threadCrochetStatus", "");
+  setStatusField("needleTypeStatus", "");
+}
+function populateGammaLots() {
+  const datalist = $("lotSuggestions");
+  if (!datalist) return;
+  datalist.innerHTML = "";
+  const currentLine = getCurrentQcLine();
+  gammaOrders
+    .filter(order => !currentLine || String(order.linea || "").trim() === currentLine)
+    .forEach(order => {
+      const opt = document.createElement("option");
+      opt.value = order.lotto;
+      opt.label = `${order.codice} — ${order.descrizione}`;
+      datalist.appendChild(opt);
+    });
+}
+function applyGammaOrderToForm(order) {
+  if (!order) return;
+  const currentLine = getCurrentQcLine();
+  const orderLine = String(order.linea || "").trim();
+  if (currentLine && orderLine && currentLine !== orderLine) {
+    resetGammaDependentFields();
+    $("saveMsg").className = "msg err";
+    $("saveMsg").textContent = "Lotto non compatibile con la linea della postazione.";
+    focusIfEnabled("lot");
+    return;
+  }
+  $("lot").value = order.lotto || "";
+  if (order.codice) {
+    ensureSelectOption("setupCodeSelect", order.codice);
+    $("setupCodeNew").value = "";
+  }
+  if (order.particolare) {
+    $("particularAuto").value = order.particolare;
+    $("particularNew").value = "";
+  } else {
+    updateParticularAuto();
+  }
+  updateToleranceInfo();
+  populateMaterialSelects();
+  if (order.filatoAgo) ensureSelectOption("threadNeedle", order.filatoAgo);
+  if (order.filatoCrochet) ensureSelectOption("threadCrochet", order.filatoCrochet);
+  if (order.ago) ensureSelectOption("needleType", order.ago);
+  applyMaterialValidation();
+  refreshDerivedFieldStates();
+}
+function handleGammaLotInput() {
+  const lot = String($("lot").value || "").trim();
+  if (!lot) {
+    resetGammaDependentFields(true)
+  }
+  if (!lot) return;
+  const order = gammaOrders.find(x => x.lotto === lot || x.idOrdine === lot);
+  if (!order) return;
+  applyGammaOrderToForm(order);
+}
+function importGammaFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const text = String(e.target.result || "").replace(/^\ufeff/, "");
+      const lines = text.replace(/\r/g, "").split("\n").filter(l => String(l || "").trim());
+      if (lines.length < 2) throw new Error("CSV vuoto o non valido");
+      const headers = parseDelimitedLine(lines[0]).map(normalizeHeaderKey);
+      const idx = (name) => headers.indexOf(normalizeHeaderKey(name));
+      const iId = idx("ID_ORDINE");
+      const iLotto = idx("LOTTO");
+      const iCodice = idx("CODICE_PRODOTTO");
+      const iDesc = idx("DESCRIZIONE_PRODOTTO");
+      const iLinea = idx("ID_LINEA");
+      const iPart = idx("PARTICOLARE");
+      const iFilAgo = idx("CODICE_FILATO_AGO");
+      const iFilCro = idx("CODICE_FILATO_CROCHET");
+      const iAgo = idx("CODICE_AGO");
+      const iStato = idx("STATO_ORDINE");
+      if ([iId, iLotto, iCodice, iLinea].some(v => v < 0)) throw new Error("Colonne Gamma obbligatorie mancanti");
+
+      gammaOrders = lines.slice(1).map(line => parseDelimitedLine(line)).map(cols => ({
+        idOrdine: cols[iId] || "",
+        lotto: cols[iLotto] || "",
+        codice: cols[iCodice] || "",
+        descrizione: iDesc >= 0 ? (cols[iDesc] || "") : "",
+        linea: iLinea >= 0 ? (cols[iLinea] || "") : "",
+        particolare: iPart >= 0 ? (cols[iPart] || "") : "",
+        filatoAgo: iFilAgo >= 0 ? (cols[iFilAgo] || "") : "",
+        filatoCrochet: iFilCro >= 0 ? (cols[iFilCro] || "") : "",
+        ago: iAgo >= 0 ? (cols[iAgo] || "") : "",
+        statoOrdine: iStato >= 0 ? (cols[iStato] || "") : ""
+      })).filter(r => r.lotto && r.codice).filter(r => !r.statoOrdine || !["CHIUSO","ANNULLATO"].includes(String(r.statoOrdine).toUpperCase()));
+
+      saveStorage();
+      populateGammaLots();
+      resetGammaDependentFields();
+      refreshDerivedFieldStates();
+      $("saveMsg").className = "msg ok";
+      $("saveMsg").textContent = `Import Gamma OK: ${gammaOrders.length} ordini attivi caricati.`;
+      updateDataSourceStatus();
+    } catch (err) {
+      $("saveMsg").className = "msg err";
+      $("saveMsg").textContent = `Import Gamma fallito: ${String(err.message || err)}`;
+    }
+  };
+  reader.readAsText(file, "utf-8");
 }
 function getMaterialRules(linea) {
   return masterData.materialiSettings?.[String(linea || "").trim()] || null;
@@ -237,6 +497,7 @@ function populateMasterSelects() {
   populateCodeSelect();
   populateSelect("machineBadgeSelect", masterData.macchiniste, item => item.nome ? `${item.badge} — ${item.nome}` : item.badge);
   populateMaterialSelects();
+  populateGammaLots();
 }
 function sheetRows(workbook, names) {
   for (const n of names) {
@@ -260,11 +521,16 @@ function importAnagraficheFile(file) {
       const codRows = sheetRows(workbook, ["Codici_Prodotto","Codici Prodotto","Codici"]);
       const tollRows = sheetRows(workbook, ["Misure","Tolleranze","Tolleranze_Misure"]);
       const materialRows = sheetRows(workbook, ["Materiali e settaggi","Materiali_e_settaggi","Materiali"]);
+      let qcUsers = {};
 
       const errors = [];
+      try {
+        qcUsers = parseQcUsers(workbook);
+      } catch (userErr) {
+        errors.push(String(userErr.message || userErr));
+      }
       if (!postRows.length) errors.push("Foglio Postazioni mancante o vuoto");
       if (!lineRows.length) errors.push("Foglio Elenco Linee mancante o vuoto");
-      if (!codRows.length) errors.push("Foglio Codici_Prodotto mancante o vuoto");
       if (!tollRows.length) errors.push("Foglio Misure mancante o vuoto");
       if (errors.length) {
         $("saveMsg").className = "msg err";
@@ -384,19 +650,62 @@ function importAnagraficheFile(file) {
       }
 
       masterData = candidate;
+      saveStoredUsers(qcUsers, dateTimeString());
       saveStorage();
       populateMasterSelects();
       updateAutoType();
       populateMasterSelects();
       updateToleranceInfo();
-      $("saveMsg").className = "msg";
-      $("saveMsg").textContent = "";
+      refreshDerivedFieldStates();
+      $("saveMsg").className = "msg ok";
+      $("saveMsg").textContent = `Import anagrafiche OK. Utenti attivi caricati: ${Object.keys(qcUsers).length}.`;
+      updateDataSourceStatus();
+      updateLoginScreenState();
     } catch (err) {
       $("saveMsg").className = "msg err";
       $("saveMsg").textContent = "Import anagrafiche fallito.";
     }
   };
   reader.readAsArrayBuffer(file);
+}
+
+
+function importBootstrapAnagraficheFile(file) {
+  if (!file) return;
+  const msg = $("bootstrapMsg");
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const data = new Uint8Array(e.target.result);
+      const workbook = XLSX.read(data, { type: "array" });
+      const qcUsers = parseQcUsers(workbook);
+      saveStoredUsers(qcUsers, dateTimeString());
+      if (msg) {
+        msg.className = "msg ok";
+        msg.textContent = `Anagrafica utenti caricata. Utenti attivi: ${Object.keys(qcUsers).length}. Ora puoi accedere.`;
+      }
+      updateLoginScreenState();
+      focusIfEnabled("loginUser");
+    } catch (err) {
+      if (msg) {
+        msg.className = "msg err";
+        msg.textContent = `Import configurazione fallito: ${String(err.message || err)}`;
+      }
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+
+function refreshDerivedFieldStates() {
+  const lineField = $("lineaSelect");
+  const codeField = $("setupCodeSelect");
+  const stitchField = $("stitchTypeAuto");
+  const particularField = $("particularAuto");
+  if (lineField) lineField.disabled = true;
+  if (codeField) codeField.disabled = true;
+  if (stitchField) stitchField.readOnly = true;
+  if (particularField) particularField.readOnly = true;
 }
 
 function focusIfEnabled(id) {
@@ -423,7 +732,7 @@ function syncMachineSelectionPreview() {
 }
 
 function initSmartFocus() {
-  $("workstationSelect").addEventListener("change", () => focusIfEnabled("lot"));
+  $("workstationSelect").addEventListener("change", () => { populateGammaLots(); resetGammaDependentFields(); focusIfEnabled("lot"); });
   $("machineBadgeSelect")?.addEventListener("change", syncMachineSelectionPreview);
 
   const lotInput = $("lot");
@@ -436,8 +745,9 @@ function initSmartFocus() {
     event.preventDefault();
     moveLotToSetupCode();
   });
-  lotInput.addEventListener("change", moveLotToSetupCode);
-  lotInput.addEventListener("blur", moveLotToSetupCode);
+  lotInput.addEventListener("change", () => { handleGammaLotInput(); moveLotToSetupCode(); });
+  lotInput.addEventListener("blur", () => { handleGammaLotInput(); moveLotToSetupCode(); });
+  lotInput.addEventListener("input", handleGammaLotInput);
 
   $("setupCodeSelect").addEventListener("change", () => focusIfEnabled("measureBorder"));
   $("measureBorder").addEventListener("keydown", (event) => handleEnterAdvance(event, "measurePitch"));
@@ -465,6 +775,7 @@ function syncLineFromWorkstation() {
     $("lineaSelect").value = mapped;
   }
   populateCodeSelect();
+  refreshDerivedFieldStates();
   updateToleranceInfo();
 }
 
@@ -502,28 +813,34 @@ function applyToleranceAuto() {
   setStatusField("measureNotchStatus", notch);
 }
 function populateMaterialSelects() {
+  const gammaOrder = getSelectedGammaOrder();
+  if (gammaOrder) {
+    populateSelect("threadNeedle", uniqueClean([gammaOrder.filatoAgo].filter(Boolean)));
+    populateSelect("threadCrochet", uniqueClean([gammaOrder.filatoCrochet].filter(Boolean)));
+    populateSelect("needleType", uniqueClean([gammaOrder.ago].filter(Boolean)));
+    applyMaterialValidation();
+    return;
+  }
   const linea = String(getSelectedLinea() || "").trim();
   const rules = getMaterialRules(linea);
   populateSelect("threadNeedle", rules?.threadNeedle || []);
   populateSelect("threadCrochet", rules?.threadCrochet || []);
   populateSelect("needleType", rules?.needleType || []);
   applyMaterialValidation();
+  refreshDerivedFieldStates();
 }
 function applyMaterialValidation() {
-  const linea = String(getSelectedLinea() || "").trim();
-  const rules = getMaterialRules(linea);
-  if (!rules) {
-    setStatusField("threadNeedleStatus", "");
-    setStatusField("threadCrochetStatus", "");
-    setStatusField("needleTypeStatus", "");
-    return;
-  }
-  const needle = String($("threadNeedle").value || "").trim();
-  const crochet = String($("threadCrochet").value || "").trim();
-  const ago = String($("needleType").value || "").trim();
-  setStatusField("threadNeedleStatus", needle ? (rules.threadNeedle.includes(needle) ? "OK" : "KO") : "");
-  setStatusField("threadCrochetStatus", crochet ? (rules.threadCrochet.includes(crochet) ? "OK" : "KO") : "");
-  setStatusField("needleTypeStatus", ago ? (rules.needleType.includes(ago) ? "OK" : "KO") : "");
+  const statuses = ["threadNeedleStatus","threadCrochetStatus","needleTypeStatus"];
+  statuses.forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    const current = String(el.value || "").trim();
+    if (!["OK","KO"].includes(current)) {
+      setFastChoiceValue(id, "");
+    } else {
+      setFastChoiceValue(id, current);
+    }
+  });
 }
 function updateToleranceInfo() {
   const linea = getSelectedLinea();
@@ -602,12 +919,15 @@ function renderAnomalies() {
   body.innerHTML = "";
   anomalies.slice().reverse().forEach(a => {
     const tr = document.createElement("tr");
+    const effectiveStatus = getDerivedAnomalyStatus(a);
+    const badgeClass = effectiveStatus === "Chiusa" ? "badge-valid" : (effectiveStatus === "In gestione" ? "badge-state" : "badge-open");
     tr.innerHTML = `
       <td>${a.openedAt}</td>
       <td>${a.lot}</td>
       <td>${a.type}</td>
       <td><span class="badge ${a.severity === "Grave" ? "badge-sev-high":"badge-sev-medium"}">${a.severity}</span></td>
-      <td><span class="badge badge-open">${a.status}</span></td>
+      <td><span class="badge ${badgeClass}">${effectiveStatus}</span></td>
+      <td><button class="secondary" onclick="openAnomalyModal('${a.id}')">Dettagli</button></td>
     `;
     body.appendChild(tr);
   });
@@ -616,15 +936,24 @@ function renderKpis() {
   const total = controls.length;
   const ko = controls.filter(c => c.outcome === "KO").length;
   const rate = total ? ((ko / total) * 100).toFixed(1).replace(".", ",") + "%" : "0%";
-  const open = anomalies.filter(a => a.status === "Aperta").length;
+  const open = anomalies.filter(a => getDerivedAnomalyStatus(a) === "Aperta").length;
+  const inProgress = anomalies.filter(a => getDerivedAnomalyStatus(a) === "In gestione").length;
+  const closed = anomalies.filter(a => getDerivedAnomalyStatus(a) === "Chiusa").length;
+  const resolvedBase = open + inProgress + closed;
+  const resolutionRate = resolvedBase ? ((closed / resolvedBase) * 100).toFixed(1).replace(".", ",") + "%" : "0%";
   $("kpiTotalControls").textContent = total;
   $("kpiTotalKo").textContent = ko;
   $("kpiKoRate").textContent = rate;
   $("kpiOpenAnomalies").textContent = open;
+  if ($("kpiInProgressAnomalies")) $("kpiInProgressAnomalies").textContent = inProgress;
+  if ($("kpiClosedAnomalies")) $("kpiClosedAnomalies").textContent = closed;
+  if ($("kpiResolutionRate")) $("kpiResolutionRate").textContent = resolutionRate + " risolte";
 }
 function clearForm() {
   ["workstationNew","stitchTypeNew","lineaNew","lot","setupCodeNew","particularNew","measureBorder","measurePitch","measureNotch","notes"].forEach(id => $(id).value = "");
-  ["qualityStop","qualitySkipped","qualityNeedle","needleChange","notesStatus","threadNeedle","threadCrochet","needleType"].forEach(id => $(id).selectedIndex = 0);
+  ["needleChange","notesStatus","threadNeedle","threadCrochet","needleType"].forEach(id => $(id).selectedIndex = 0);
+  ["qualityStop","qualitySkipped","qualityNeedle"].forEach(id => setFastChoiceValue(id, "OK"));
+  ["threadNeedleStatus","threadCrochetStatus","needleTypeStatus"].forEach(id => setFastChoiceValue(id, ""));
   $("shift").selectedIndex = 0;
   $("workstationSelect").selectedIndex = 0;
   $("lineaSelect").selectedIndex = 0;
@@ -642,6 +971,7 @@ function clearForm() {
 function clearForContinuousControl() {
   ["lot","measureBorder","measurePitch","measureNotch","notes"].forEach(id => $(id).value = "");
   $("notesStatus").selectedIndex = 0;
+  ["threadNeedleStatus","threadCrochetStatus","needleTypeStatus"].forEach(id => setFastChoiceValue(id, ""));
   setStatusField("measureBorderStatus", "");
   setStatusField("measurePitchStatus", "");
   setStatusField("measureNotchStatus", "");
@@ -726,24 +1056,40 @@ function saveControl() {
     }
   }
 
-  if (control.setupCode && control.linea) {
+  const gammaOrder = gammaOrders.find(x => x.lotto === control.lot || x.idOrdine === control.lot) || null;
+
+  if (gammaOrder) {
+    const gammaLine = String(gammaOrder.linea || "").trim();
+    if (control.linea && gammaLine && control.linea !== gammaLine) {
+      validationErrors.push({ field: "lot", message: "Lotto non compatibile con la linea della postazione." });
+    }
+    if (control.setupCode && String(gammaOrder.codice || "").trim() && control.setupCode !== String(gammaOrder.codice || "").trim()) {
+      validationErrors.push({ field: "setupCodeSelect", message: "Il codice prodotto non coincide con l'ordine Gamma selezionato." });
+    }
+  } else if (control.setupCode && control.linea) {
     const codeMatch = (masterData.codici || []).some(item => String(item.codice || "").trim() === control.setupCode && String(item.linea || "").trim() === control.linea);
     if (!codeMatch) {
       validationErrors.push({ field: "setupCodeSelect", message: "Il codice prodotto non appartiene alla linea selezionata." });
     }
   }
 
-  const materialRules = getMaterialRules(control.linea);
-  if (control.linea && materialRules) {
+  if (gammaOrder) {
     if (!control.threadNeedle) validationErrors.push({ field: "threadNeedle", message: "Codice filato ago obbligatorio." });
     if (!control.threadCrochet) validationErrors.push({ field: "threadCrochet", message: "Codice filato crochet obbligatorio." });
     if (!control.needleType) validationErrors.push({ field: "needleType", message: "Ago obbligatorio." });
     if (control.threadNeedle && !control.threadNeedleStatus) validationErrors.push({ field: "threadNeedle", message: "Esito codice filato ago non calcolato." });
     if (control.threadCrochet && !control.threadCrochetStatus) validationErrors.push({ field: "threadCrochet", message: "Esito codice filato crochet non calcolato." });
     if (control.needleType && !control.needleTypeStatus) validationErrors.push({ field: "needleType", message: "Esito ago non calcolato." });
-    if (control.threadNeedleStatus === "KO") validationErrors.push({ field: "threadNeedle", message: "Codice filato ago non conforme per la linea selezionata." });
-    if (control.threadCrochetStatus === "KO") validationErrors.push({ field: "threadCrochet", message: "Codice filato crochet non conforme per la linea selezionata." });
-    if (control.needleTypeStatus === "KO") validationErrors.push({ field: "needleType", message: "Ago non conforme per la linea selezionata." });
+  } else {
+    const materialRules = getMaterialRules(control.linea);
+    if (control.linea && materialRules) {
+      if (!control.threadNeedle) validationErrors.push({ field: "threadNeedle", message: "Codice filato ago obbligatorio." });
+      if (!control.threadCrochet) validationErrors.push({ field: "threadCrochet", message: "Codice filato crochet obbligatorio." });
+      if (!control.needleType) validationErrors.push({ field: "needleType", message: "Ago obbligatorio." });
+      if (control.threadNeedle && !control.threadNeedleStatus) validationErrors.push({ field: "threadNeedle", message: "Esito codice filato ago non calcolato." });
+      if (control.threadCrochet && !control.threadCrochetStatus) validationErrors.push({ field: "threadCrochet", message: "Esito codice filato crochet non calcolato." });
+      if (control.needleType && !control.needleTypeStatus) validationErrors.push({ field: "needleType", message: "Esito ago non calcolato." });
+    }
   }
 
   if (validationErrors.length) {
@@ -999,6 +1345,149 @@ function backupJson() {
   a.download = "qc_backup.json";
   a.click();
 }
+
+function getAnomalyById(id) {
+  return anomalies.find(x => x.id === id) || null;
+}
+function renderAnomalyActionsHistory(anomaly) {
+  const box = $("anomalyActionsHistory");
+  if (!box) return;
+  const actions = Array.isArray(anomaly?.actions) ? anomaly.actions : [];
+  if (!actions.length) {
+    box.innerHTML = '<div class="detail-row"><div class="detail-key">Storico</div><div>Nessuna azione registrata.</div></div>';
+    return;
+  }
+  box.innerHTML = actions.slice().reverse().map(a => `
+    <div class="detail-row"><div class="detail-key">${a.createdAt}</div><div><strong>${a.owner || '-'} </strong><br>${a.text || '-'}${a.verifyOutcome ? `<br>Verifica dopo azione: <span class="badge ${a.verifyOutcome === "OK" ? "badge-ok" : (a.verifyOutcome === "KO" ? "badge-ko" : "badge-state")}">${a.verifyOutcome}</span>` : ''}${a.notes ? `<br>Note: ${a.notes}` : ''}</div></div>
+  `).join('');
+}
+function applyVerifyOutcomeVisualState() {
+  const sel = $("anomalyVerifyOutcome");
+  if (!sel) return;
+  sel.classList.remove("state-ok","state-ko","state-progress");
+  const v = String(sel.value || "").trim().toUpperCase();
+  if (v === "OK") sel.classList.add("state-ok");
+  else if (v === "KO") sel.classList.add("state-ko");
+  else sel.classList.add("state-progress");
+}
+
+function getDerivedAnomalyStatus(anomaly) {
+  if (!anomaly) return "Aperta";
+  if (anomaly.status === "Chiusa" || anomaly.closedAt) return "Chiusa";
+  const hasActions = Array.isArray(anomaly.actions) && anomaly.actions.length > 0;
+  return hasActions ? "In gestione" : "Aperta";
+}
+function refreshAnomalyCloseButton() {
+  const anomaly = getAnomalyById(currentAnomalyId);
+  if (!anomaly) return;
+  const text = String($("anomalyActionText").value || "").trim();
+  const verifyOutcome = String($("anomalyVerifyOutcome").value || "IN CORSO").trim().toUpperCase();
+  $("btnCloseAnomaly").disabled = anomaly.status === "Chiusa" || !text || verifyOutcome !== "OK";
+}
+function refreshAnomalyModal() {
+  const anomaly = getAnomalyById(currentAnomalyId);
+  if (!anomaly) return;
+  anomaly.status = getDerivedAnomalyStatus(anomaly);
+  $("anomalyStatusView").value = anomaly.status || "Aperta";
+  const related = controls.find(c => c.id === anomaly.controlId);
+  const section = (title, rows, full=false) => `
+    <div class="detail-section ${full ? 'full' : ''}">
+      <h4>${title}</h4>
+      ${rows.map(([k,v]) => `<div class="detail-row"><div class="detail-key">${k}</div><div>${v || '-'}</div></div>`).join('')}
+    </div>`;
+  $("anomalyContent").innerHTML = [
+    section("Anomalia", [
+      ["Aperta il", anomaly.openedAt],
+      ["Lotto", anomaly.lot],
+      ["Tipo", anomaly.type],
+      ["Severità", anomaly.severity],
+      ["Stato", anomaly.status],
+      ["Chiusa il", anomaly.closedAt || '-']
+    ]),
+    section("Controllo collegato", related ? [
+      ["Postazione", related.workstation],
+      ["Linea", related.linea],
+      ["Codice prodotto", related.setupCode],
+      ["Esito controllo", related.outcome]
+    ] : [["Controllo", "Non trovato"]])
+  ].join('');
+  renderAnomalyActionsHistory(anomaly);
+  applyVerifyOutcomeVisualState();
+  refreshAnomalyCloseButton();
+}
+function openAnomalyModal(id) {
+  currentAnomalyId = id;
+  $("anomalyActionText").value = "";
+  $("anomalyActionNotes").value = "";
+  $("anomalyVerifyOutcome").value = "IN CORSO";
+  $("anomalyOwner").value = currentUser?.name || "";
+  $("anomalyMsg").textContent = "";
+  applyVerifyOutcomeVisualState();
+  refreshAnomalyModal();
+  $("anomalyModal").classList.remove("hidden");
+}
+function closeAnomalyModal() {
+  currentAnomalyId = null;
+  $("anomalyModal").classList.add("hidden");
+}
+function saveAnomalyAction(shouldClose=false) {
+  const anomaly = getAnomalyById(currentAnomalyId);
+  if (!anomaly) return;
+  const text = String($("anomalyActionText").value || "").trim();
+  const owner = String($("anomalyOwner").value || "").trim();
+  const verifyOutcome = String($("anomalyVerifyOutcome").value || "IN CORSO").trim().toUpperCase();
+  const notes = String($("anomalyActionNotes").value || "").trim();
+  if (!text) {
+    $("anomalyMsg").className = "msg err";
+    $("anomalyMsg").textContent = "Azione correttiva obbligatoria.";
+    return;
+  }
+  if (!owner) {
+    $("anomalyMsg").className = "msg err";
+    $("anomalyMsg").textContent = "Responsabile obbligatorio.";
+    return;
+  }
+  if (shouldClose && verifyOutcome !== "OK") {
+    $("anomalyMsg").className = "msg err";
+    $("anomalyMsg").textContent = "Per chiudere devi impostare 'Verifica dopo azione' su OK.";
+    return;
+  }
+  anomaly.actions = Array.isArray(anomaly.actions) ? anomaly.actions : [];
+  anomaly.actions.push({
+    id: crypto.randomUUID(),
+    text,
+    owner,
+    verifyOutcome,
+    notes,
+    createdAt: dateTimeString(),
+    createdBy: currentUser?.name || ""
+  });
+  anomaly.takenInChargeAt = anomaly.takenInChargeAt || dateTimeString();
+  anomaly.takenInChargeBy = anomaly.takenInChargeBy || owner;
+  anomaly.status = shouldClose ? "Chiusa" : "In gestione";
+  if (shouldClose) {
+    anomaly.closedAt = dateTimeString();
+    anomaly.closedBy = currentUser?.name || owner;
+  } else {
+    anomaly.closedAt = "";
+    anomaly.closedBy = "";
+  }
+  saveStorage();
+  const related = controls.find(c => c.id === anomaly.controlId);
+  if (related) queueControlForSync(related);
+  renderAnomalies();
+  renderKpis();
+  $("anomalyActionText").value = "";
+  $("anomalyActionNotes").value = "";
+  $("anomalyVerifyOutcome").value = "IN CORSO";
+  refreshAnomalyModal();
+  $("anomalyMsg").className = "msg ok";
+  $("anomalyMsg").textContent = shouldClose ? "Anomalia chiusa." : "Aggiornamento salvato.";
+}
+function closeAnomalyRecord() {
+  saveAnomalyAction(true);
+}
+
 function openDetailModal(id) {
   const c = controls.find(x => x.id === id);
   if (!c) return;
@@ -1153,7 +1642,7 @@ function importBackupFile(file) {
       const parsed = JSON.parse(e.target.result);
       if (!parsed.controls || !parsed.anomalies) throw new Error("File non valido");
       controls = parsed.controls;
-      anomalies = parsed.anomalies;
+      anomalies = (parsed.anomalies || []).map(a => ({ actions: [], status: "Aperta", ...a, actions: Array.isArray(a.actions) ? a.actions : [] }));
       if (parsed.masterData) masterData = parsed.masterData;
       syncQueue = [];
       syncMeta.lastError = "";
@@ -1177,42 +1666,60 @@ function importBackupFile(file) {
 function login() {
   const u = $("loginUser").value.trim();
   const p = $("loginPass").value;
-  if (!USERS[u] || USERS[u].password !== p) {
+  const user = systemUsers[u];
+  if (!user || String(user.password) !== String(p)) {
     $("loginMsg").textContent = "Credenziali non valide.";
     return;
   }
-  currentUser = USERS[u];
+  $("loginMsg").textContent = "";
+  currentUser = user;
   $("loginView").classList.add("hidden");
   $("appView").classList.remove("hidden");
   $("loggedUser").textContent = currentUser.name;
   $("todayDate").textContent = todayString();
   renderSyncStatus();
+  updateDataSourceStatus();
   focusIfEnabled("workstationSelect");
 }
 function logout() {
   currentUser = null;
   $("appView").classList.add("hidden");
   $("loginView").classList.remove("hidden");
+  $("loginPass").value = "";
+  $("loginMsg").textContent = "";
+  updateLoginScreenState();
 }
 window.openDetailModal = openDetailModal;
 window.closeDetailModal = closeDetailModal;
+window.openAnomalyModal = openAnomalyModal;
+window.closeAnomalyModal = closeAnomalyModal;
 window.openAttestModal = openAttestModal;
 window.closeAttestModal = closeAttestModal;
 
 window.addEventListener("DOMContentLoaded", () => {
   // Bind critical actions first
   $("btnLogin").addEventListener("click", login);
+  $("btnBootstrapImport").addEventListener("click", () => $("bootstrapAnagraficheFile").click());
+  $("bootstrapAnagraficheFile").addEventListener("change", (e) => importBootstrapAnagraficheFile(e.target.files[0]));
   $("btnLogout").addEventListener("click", logout);
+  $("loginPass").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
   $("btnSave").addEventListener("click", saveControl);
+  $("btnSaveAnomalyAction").addEventListener("click", () => saveAnomalyAction(false));
+  $("btnCloseAnomaly").addEventListener("click", closeAnomalyRecord);
+  $("anomalyVerifyOutcome").addEventListener("change", () => { applyVerifyOutcomeVisualState(); refreshAnomalyCloseButton(); });
+  $("anomalyActionText").addEventListener("input", refreshAnomalyCloseButton);
   $("btnExportCsv").addEventListener("click", exportCsv);
   $("btnExportKpi").addEventListener("click", exportKpi);
   $("btnPrint").addEventListener("click", printApp);
+  $("btnImportGamma").addEventListener("click", () => $("importGammaFile").click());
+  $("importGammaFile").addEventListener("change", (e) => importGammaFile(e.target.files[0]));
   $("btnImportAnagrafiche").addEventListener("click", () => $("importAnagraficheFile").click());
+  if ($("btnToggleManualEntry")) $("btnToggleManualEntry").addEventListener("click", () => toggleManualEntryPanel());
   $("importAnagraficheFile").addEventListener("change", (e) => importAnagraficheFile(e.target.files[0]));
-  $("workstationSelect").addEventListener("change", () => { updateAutoType(); syncLineFromWorkstation(); });
-  $("workstationNew").addEventListener("input", () => { updateAutoType(); syncLineFromWorkstation(); });
-  $("lineaSelect").addEventListener("change", () => { populateCodeSelect(); updateToleranceInfo(); });
-  $("lineaNew").addEventListener("input", () => { populateCodeSelect(); updateToleranceInfo(); });
+  $("workstationSelect").addEventListener("change", () => { updateAutoType(); syncLineFromWorkstation(); populateGammaLots(); resetGammaDependentFields(); });
+  $("workstationNew").addEventListener("input", () => { updateAutoType(); syncLineFromWorkstation(); populateGammaLots(); resetGammaDependentFields(); });
+  $("lineaSelect").addEventListener("change", () => { populateCodeSelect(); updateToleranceInfo(); populateGammaLots(); resetGammaDependentFields(); });
+  $("lineaNew").addEventListener("input", () => { populateCodeSelect(); updateToleranceInfo(); populateGammaLots(); resetGammaDependentFields(); });
   $("measureBorder").addEventListener("input", applyToleranceAuto);
   $("measurePitch").addEventListener("input", applyToleranceAuto);
   $("measureNotch").addEventListener("input", applyToleranceAuto);
@@ -1226,8 +1733,10 @@ window.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("online", () => { syncMeta.lastError = ""; renderSyncStatus(); scheduleSync(); });
   window.addEventListener("offline", renderSyncStatus);
   initSmartFocus();
+  initFastChoices();
 
   try {
+    loadStoredUsers();
     loadStorage();
     populateMasterSelects();
     updateAutoType();
@@ -1239,9 +1748,37 @@ window.addEventListener("DOMContentLoaded", () => {
     renderKpis();
     renderSyncStatus();
     scheduleSync();
+    updateDataSourceStatus();
+    updateLoginScreenState();
+    toggleManualEntryPanel(false);
   } catch (err) {
     console.error("Init error:", err);
     const msg = $("loginMsg");
     if (msg) msg.textContent = "Inizializzazione parziale. Il login resta disponibile.";
   }
 });
+
+// ===== Data source status (Gamma + QC) =====
+window.__gammaLoaded = false;
+window.__qcLoaded = false;
+
+function updateDataSourceStatus(){
+  const gammaBadge = $("badgeGamma");
+  const qcBadge = $("badgeQc");
+  if (!gammaBadge || !qcBadge) return;
+
+  window.__gammaLoaded = Array.isArray(gammaOrders) && gammaOrders.length > 0;
+  window.__qcLoaded = Array.isArray(masterData.postazioni) && masterData.postazioni.length > 0
+    && Array.isArray(masterData.linee) && masterData.linee.length > 0
+    && masterData.tolleranze && Object.keys(masterData.tolleranze).length > 0;
+
+  gammaBadge.className = "top-badge";
+  qcBadge.className = "top-badge";
+  gammaBadge.textContent = window.__gammaLoaded ? `Gamma: OK (${gammaOrders.length})` : "Gamma: NO";
+  qcBadge.textContent = window.__qcLoaded ? "QC: OK" : "QC: NO";
+  gammaBadge.classList.add(window.__gammaLoaded ? "badge-success-soft" : "badge-neutral-soft");
+  qcBadge.classList.add(window.__qcLoaded ? "badge-success-soft" : "badge-neutral-soft");
+
+  const saveBtn = $("btnSave");
+  if (saveBtn) saveBtn.disabled = !(window.__gammaLoaded && window.__qcLoaded);
+}

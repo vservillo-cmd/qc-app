@@ -92,3 +92,9 @@ Aggiornamenti v12:
 - prima riga del form ricostruita davvero con griglia dedicata
 - Turno, Postazione, Tipo cucitura, Linea lavorazione, Lotto, Codice prodotto e Particolare in produzione ora stanno sulla stessa riga su schermi desktop ampi
 - seconda riga separata per i campi 'nuovo ...'
+
+
+Aggiornamenti v22:
+- pulsanti rapidi OK/KO compattati
+- minore altezza e padding per migliorare la visibilità generale della pagina
+- mantenuta cliccabilità adatta all'uso rapido

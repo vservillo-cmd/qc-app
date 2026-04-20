@@ -12,48 +12,65 @@
 <body>
   <div id="loginView" class="center-wrap">
     <div class="card login-card">
-      <h1>QC Tablet Pilot</h1>
-      <p class="muted">Login demo</p>
-      <label>Utente</label>
-      <input id="loginUser" type="text" value="qualita1" />
-      <label>Password</label>
-      <input id="loginPass" type="password" value="1234" />
-      <button id="btnLogin" class="primary full" onclick="login()">Entra</button>
-      <div id="loginMsg" class="msg"></div>
-      <div class="demo-box">
-        <strong>Credenziali demo</strong><br>
-        qualita1 / 1234
+      <h1>CONTROLLI IN PROCESSO</h1>
+      <p class="muted">Accesso operatrici controllo qualità</p>
+
+      <div id="bootstrapBox" class="bootstrap-box hidden">
+        <h3>Configurazione iniziale</h3>
+        <p class="muted">Prima del login devi importare il file QC con il foglio <strong>controllo qualità</strong>.</p>
+        <button id="btnBootstrapImport" class="primary full" type="button">Importa anagrafica QC</button>
+        <input id="bootstrapAnagraficheFile" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" class="hidden" />
+        <div id="bootstrapMsg" class="msg"></div>
+      </div>
+
+      <div id="loginFormBox">
+        <div id="loginUsersInfo" class="muted small-note"></div>
+        <label>Utente</label>
+        <input id="loginUser" type="text" autocomplete="username" />
+        <label>Password</label>
+        <input id="loginPass" type="password" autocomplete="current-password" />
+        <button id="btnLogin" class="primary full" type="button">Entra</button>
+        <div id="loginMsg" class="msg"></div>
       </div>
     </div>
   </div>
 
   <div id="appView" class="hidden">
-    <header class="topbar">
-      <div>
-        <h1>QC Tablet - Operatrice Controllo Qualità</h1>
+    <header class="topbar header-stack">
+      <div class="title-row">
+        <h1>CONTROLLI IN PROCESSO</h1>
         <div class="subline"><span id="loggedUser"></span> · <span id="todayDate"></span></div>
-        <div class="sync-panel">
-          <div class="sync-line">
-            <span class="sync-dot" id="syncDot"></span>
-            <strong id="syncLabel">Sincronizzato</strong>
-            <button id="btnRetrySync" class="secondary sync-retry hidden" type="button">Riprova sync</button>
-          </div>
-          <div id="syncDetail" class="sync-detail">Nessun controllo in attesa.</div>
-        </div>
       </div>
-      <div class="top-actions">
-        <button id="btnExportCsv" class="secondary">Esporta dati</button>
-        <button id="btnExportKpi" class="secondary">Esporta KPI</button>
-        <button id="btnPrint" class="secondary">Stampa</button>
-        <button id="btnImportAnagrafiche" class="secondary">Importa Anagrafiche</button>
-        <input id="importAnagraficheFile" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" class="hidden" />
-        <button id="btnLogout" class="danger">Esci</button>
+
+      <div class="status-badges-row">
+        <span id="badgePending" class="top-badge badge-warning-soft">Attesa: 0</span>
+        <span id="badgeStorage" class="top-badge">Salvataggio: locale</span>
+        <span id="badgeEndpoint" class="top-badge">Endpoint: OFF</span>
+        <span id="badgeGamma" class="top-badge badge-neutral-soft">Gamma: NO</span>
+        <span id="badgeQc" class="top-badge badge-neutral-soft">QC: NO</span>
+        <button id="btnRetrySync" class="secondary sync-retry hidden" type="button">Riprova sync</button>
+      </div>
+
+      <div class="top-actions actions-split-row">
+        <div class="actions-group actions-group-left">
+          <button id="btnImportGamma" class="secondary">Importa da Gamma</button>
+          <input id="importGammaFile" type="file" accept=".csv,text/csv" class="hidden" />
+          <button id="btnImportAnagrafiche" class="secondary">Importa Anagrafiche</button>
+          <input id="importAnagraficheFile" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" class="hidden" />
+        </div>
+        <div class="actions-group actions-group-right">
+          <button id="btnExportCsv" class="secondary">Esporta dati</button>
+          <button id="btnExportKpi" class="secondary">Esporta KPI</button>
+          <button id="btnPrint" class="secondary">Stampa</button>
+          <button id="btnLogout" class="danger">Esci</button>
+        </div>
       </div>
     </header>
 
     <main class="container">
-      <section class="card">
+      <section class="card form-card">
         <h2>Nuovo controllo</h2>
+        <div class="section-marker">Contesto produzione</div>
 
         <div class="top-row-grid">
           <div class="field-stack field-turno">
@@ -74,36 +91,46 @@
           </div>
 
           <div class="field-stack field-tipo">
-            <label>Tipo cucitura</label>
-            <input id="stitchTypeAuto" type="text" readonly />
+            <label>Tipo cucitura <span class="auto-badge-inline">AUTO</span></label>
+            <input id="stitchTypeAuto" class="auto-field" type="text" readonly />
+            <div class="field-origin">Derivato da Postazione</div>
           </div>
 
           <div class="field-stack field-linea">
-            <label>Linea lavorazione</label>
-            <select id="lineaSelect">
+            <label>Linea lavorazione <span class="auto-badge-inline">AUTO</span></label>
+            <select id="lineaSelect" class="auto-field" disabled>
               <option value="">Seleziona</option>
             </select>
+            <div class="field-origin">Derivata da Postazione</div>
           </div>
 
           <div class="field-stack field-lotto">
             <label>Lotto</label>
-            <input id="lot" type="text" />
+            <input id="lot" type="text" list="lotSuggestions" autocomplete="off" />
+            <datalist id="lotSuggestions"></datalist>
           </div>
 
           <div class="field-stack field-codice">
-            <label>Codice prodotto</label>
-            <select id="setupCodeSelect">
+            <label>Codice prodotto <span class="auto-badge-inline">AUTO</span></label>
+            <select id="setupCodeSelect" class="auto-field" disabled>
               <option value="">Seleziona</option>
             </select>
+            <div class="field-origin">Derivato da Lotto</div>
           </div>
 
           <div class="field-stack field-particolare">
-            <label class="nowrap">Particolare in produzione</label>
-            <input id="particularAuto" type="text" readonly />
+            <label class="nowrap">Particolare in produzione <span class="auto-badge-inline">AUTO</span></label>
+            <input id="particularAuto" class="auto-field" type="text" readonly />
+            <div class="field-origin">Derivato da Lotto / Linea</div>
           </div>
         </div>
 
-        <div class="second-row-grid">
+        <div class="manual-entry-trigger-row">
+          <button id="btnToggleManualEntry" class="secondary" type="button">+ Inserimento manuale</button>
+          <span class="muted small-note">Usare solo se il dato non è presente o differisce da quanto richiamato.</span>
+        </div>
+
+        <div id="manualEntryPanel" class="second-row-grid hidden">
           <div class="field-stack">
             <label>Nuova postazione</label>
             <input id="workstationNew" class="sub-input" type="text" placeholder="Solo se non presente" />
@@ -130,6 +157,7 @@
           </div>
         </div>
 
+        <div class="section-marker">Controlli dimensionali</div>
         <h3>Misure</h3>
         <div id="toleranceInfo" class="muted small-note"></div>
         <div class="grid measure-grid">
@@ -159,23 +187,37 @@
           </div>
         </div>
 
-        <h3>Controlli qualitativi</h3>
+        <div class="section-marker">Controlli qualitativi</div>
+        <h3 class="subtle-title">Controlli qualitativi</h3>
         <div class="grid cols-3">
           <div>
             <label>Fermapunto</label>
-            <select id="qualityStop"><option>OK</option><option>KO</option></select>
+            <input id="qualityStop" type="hidden" value="OK" />
+            <div class="fast-choice" data-target="qualityStop" data-default="OK">
+              <button type="button" class="choice-btn ok" data-value="OK">OK</button>
+              <button type="button" class="choice-btn ko" data-value="KO">KO</button>
+            </div>
           </div>
           <div>
             <label>Punti saltati</label>
-            <select id="qualitySkipped"><option>OK</option><option>KO</option></select>
+            <input id="qualitySkipped" type="hidden" value="OK" />
+            <div class="fast-choice" data-target="qualitySkipped" data-default="OK">
+              <button type="button" class="choice-btn ok" data-value="OK">OK</button>
+              <button type="button" class="choice-btn ko" data-value="KO">KO</button>
+            </div>
           </div>
           <div>
             <label>Ago spuntato</label>
-            <select id="qualityNeedle"><option>OK</option><option>KO</option></select>
+            <input id="qualityNeedle" type="hidden" value="OK" />
+            <div class="fast-choice" data-target="qualityNeedle" data-default="OK">
+              <button type="button" class="choice-btn ok" data-value="OK">OK</button>
+              <button type="button" class="choice-btn ko" data-value="KO">KO</button>
+            </div>
           </div>
         </div>
 
-        <h3>Materiali e settaggi</h3>
+        <div class="section-marker">Materiali e settaggi</div>
+        <h3 class="subtle-title">Materiali e settaggi</h3>
         <div class="grid materials-grid">
           <div>
             <label>Codice filato ago</label>
@@ -185,7 +227,11 @@
           </div>
           <div>
             <label>Esito</label>
-            <input id="threadNeedleStatus" type="text" readonly placeholder="OK / KO" />
+            <input id="threadNeedleStatus" type="hidden" value="" />
+            <div class="fast-choice fast-choice-compact" data-target="threadNeedleStatus">
+              <button type="button" class="choice-btn ok" data-value="OK">OK</button>
+              <button type="button" class="choice-btn ko" data-value="KO">KO</button>
+            </div>
           </div>
           <div>
             <label>Codice filato crochet</label>
@@ -195,7 +241,11 @@
           </div>
           <div>
             <label>Esito</label>
-            <input id="threadCrochetStatus" type="text" readonly placeholder="OK / KO" />
+            <input id="threadCrochetStatus" type="hidden" value="" />
+            <div class="fast-choice fast-choice-compact" data-target="threadCrochetStatus">
+              <button type="button" class="choice-btn ok" data-value="OK">OK</button>
+              <button type="button" class="choice-btn ko" data-value="KO">KO</button>
+            </div>
           </div>
           <div>
             <label>Ago</label>
@@ -205,7 +255,11 @@
           </div>
           <div>
             <label>Esito</label>
-            <input id="needleTypeStatus" type="text" readonly placeholder="OK / KO" />
+            <input id="needleTypeStatus" type="hidden" value="" />
+            <div class="fast-choice fast-choice-compact" data-target="needleTypeStatus">
+              <button type="button" class="choice-btn ok" data-value="OK">OK</button>
+              <button type="button" class="choice-btn ko" data-value="KO">KO</button>
+            </div>
           </div>
           <div>
             <label>Cambio ago</label>
@@ -213,7 +267,8 @@
           </div>
         </div>
 
-        <h3>Note</h3>
+        <div class="section-marker">Note finali</div>
+        <h3 class="subtle-title">Note</h3>
         <div class="grid cols-note">
           <div>
             <label>Note</label>
@@ -225,19 +280,21 @@
           </div>
         </div>
 
-        <div class="actions-row">
-          <button id="btnSave" class="success">Salva controllo</button>
+        <div class="actions-row form-save-row">
+          <button id="btnSave" class="success primary-save">Salva controllo</button>
           <div id="saveMsg" class="msg"></div>
         </div>
       </section>
 
       <section class="card">
         <h2>KPI rapidi</h2>
-        <div class="kpi-grid">
+        <div class="kpi-grid kpi-grid-6">
           <div class="kpi-card"><div class="kpi-label">Controlli totali</div><div id="kpiTotalControls" class="kpi-value">0</div></div>
           <div class="kpi-card"><div class="kpi-label">Controlli KO</div><div id="kpiTotalKo" class="kpi-value">0</div></div>
           <div class="kpi-card"><div class="kpi-label">% KO</div><div id="kpiKoRate" class="kpi-value">0%</div></div>
           <div class="kpi-card"><div class="kpi-label">Anomalie aperte</div><div id="kpiOpenAnomalies" class="kpi-value">0</div></div>
+          <div class="kpi-card"><div class="kpi-label">In gestione</div><div id="kpiInProgressAnomalies" class="kpi-value">0</div></div>
+          <div class="kpi-card"><div class="kpi-label">Chiuse / Risolte</div><div><div id="kpiClosedAnomalies" class="kpi-value">0</div><div id="kpiResolutionRate" class="kpi-subvalue">0%</div></div></div>
         </div>
       </section>
 
@@ -271,6 +328,7 @@
               <th>Tipo</th>
               <th>Severità</th>
               <th>Stato</th>
+              <th>Azioni</th>
             </tr>
           </thead>
           <tbody id="anomalyBody"></tbody>
@@ -324,5 +382,53 @@
       <div id="scanResult" class="msg"></div>
     </div>
   </div>
+
+
+  <div id="anomalyModal" class="modal hidden">
+    <div class="modal-card wide">
+      <div class="modal-header">
+        <h3>Gestione anomalia</h3>
+        <button class="secondary" onclick="closeAnomalyModal()">Chiudi</button>
+      </div>
+      <div id="anomalyContent" class="detail-grid"></div>
+      <div class="detail-section full">
+        <h4>Azione correttiva</h4>
+        <div class="grid cols-2">
+          <div>
+            <label>Responsabile</label>
+            <input id="anomalyOwner" type="text" placeholder="Es. Caposquadra" />
+          </div>
+          <div>
+            <label>Stato</label>
+            <input id="anomalyStatusView" type="text" readonly />
+          </div>
+        </div>
+        <label>Azione correttiva</label>
+        <textarea id="anomalyActionText" rows="4" placeholder="Descrivere l'azione eseguita"></textarea>
+        <label>Note</label>
+        <textarea id="anomalyActionNotes" rows="3" placeholder="Note aggiuntive"></textarea>
+        <div class="close-gate-row">
+          <div class="close-gate-box">
+            <label>Verifica dopo azione</label>
+            <select id="anomalyVerifyOutcome">
+              <option value="IN CORSO">In corso</option>
+              <option value="OK">OK</option>
+              <option value="KO">KO</option>
+            </select>
+          </div>
+          <div class="actions-row compact-actions">
+            <button id="btnSaveAnomalyAction" class="primary" type="button">Salva aggiornamento</button>
+            <button id="btnCloseAnomaly" class="success" type="button">Salva e chiudi</button>
+          </div>
+        </div>
+        <div id="anomalyMsg" class="msg"></div>
+      </div>
+      <div class="detail-section full">
+        <h4>Storico azioni</h4>
+        <div id="anomalyActionsHistory" class="detail-grid"></div>
+      </div>
+    </div>
+  </div>
+
 </body>
 </html>
