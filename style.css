@@ -291,5 +291,7 @@ input[type="hidden"] + .fast-choice{margin-top:0}
 
 .fast-choice-compact .choice-btn{min-height:34px;padding:5px 9px;font-size:12px}
 
-
-#reader.scan-ok{border-color:#28c76f;box-shadow:0 0 0 4px rgba(40,199,111,.18)}
+#reader.reader-acquired{
+  border-color:#2ad07f;
+  box-shadow:0 0 0 3px rgba(42,208,127,.18), 0 0 18px rgba(42,208,127,.18);
+}
