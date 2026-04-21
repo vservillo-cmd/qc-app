@@ -353,7 +353,7 @@
         <h3>Attestazione operatrice macchina</h3>
         <button class="secondary" onclick="closeAttestModal()">Chiudi</button>
       </div>
-      <p class="muted">Usa il QR se disponibile. Se la lettura non va, conferma dal campo manuale.</p>
+      <p class="muted">Usa il QR se disponibile. Formati supportati: badge numerico puro, QR strutturato QC|MAC|BADGE|NOME o JSON con badge. Se la lettura non va, conferma manualmente.</p>
       <div class="qr-actions">
         <button id="btnStartScan" class="primary">Avvia scansione</button>
         <button id="btnStopScan" class="secondary">Ferma</button>
@@ -364,7 +364,7 @@
         <label>Macchinista da elenco</label>
         <select id="machineBadgeSelect"><option value="">Seleziona badge</option></select>
         <label>Codice badge / QR</label>
-        <input id="manualBadge" type="text" placeholder="Es. MAC003 oppure BADGE=MAC003" />
+        <input id="manualBadge" type="text" placeholder="Es. 000000000003643 oppure BADGE:000000000003643" />
         <label>Nuova macchinista (solo se non presente)</label>
         <input id="manualMachineName" type="text" placeholder="Nome Cognome" />
         <label>Nuovo badge macchinista</label>
@@ -372,11 +372,11 @@
         <button id="btnConfirmBadge" class="success">Conferma codice</button>
       </div>
       <div class="demo-box">
-        <strong>Codici demo validi</strong>
+        <strong>Formati QR consigliati</strong>
         <ul>
-          <li>MAC001 — Anna Rossi</li>
-          <li>MAC002 — Maria Bianchi</li>
-          <li>MAC003 — Giulia Esposito</li>
+          <li>000000000003643</li>
+          <li>QC|MAC|000000000003643|CORVINO ANNUNZIATA</li>
+          <li>{&quot;type&quot;:&quot;MACCHINISTA&quot;,&quot;badge&quot;:&quot;000000000003643&quot;,&quot;name&quot;:&quot;CORVINO ANNUNZIATA&quot;}</li>
         </ul>
       </div>
       <div id="scanResult" class="msg"></div>

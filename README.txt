@@ -98,3 +98,25 @@ Aggiornamenti v22:
 - pulsanti rapidi OK/KO compattati
 - minore altezza e padding per migliorare la visibilità generale della pagina
 - mantenuta cliccabilità adatta all'uso rapido
+
+
+Aggiornamenti v23:
+- logica QR macchiniste resa robusta
+- parser QR tollerante: supporta badge numerico puro, stringa strutturata QC|MAC|BADGE|NOME e JSON con badge
+- scelta camera migliorata: prova prima camera posteriore/rear/environment
+- anti-doppia lettura: una sola attestazione per scansione
+- fallback offline migliorato: se il browser supporta BarcodeDetector usa scanner nativo senza dipendere dalla libreria esterna
+- messaggi QR allineati ai badge reali del file Excel
+
+Formato QR consigliato ufficiale:
+QC|MAC|000000000003643|CORVINO ANNUNZIATA
+
+Formato minimo supportato:
+000000000003643
+
+Estensione prevista per login QC:
+QC|QC|000000000004126|CASABURO CATERINA|CC
+
+File test inclusi:
+- qr_examples/print_qr_test.html
+- qr_examples/*.png

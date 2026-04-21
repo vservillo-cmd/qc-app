@@ -1,0 +1,50 @@
+QC TABLET – ANALISI QR E PIANO OPERATIVO
+
+1. Problemi trovati nella logica QR precedente
+- Parser fragile: la funzione normalizeCode era pensata soprattutto per codici tipo MAC001 e non per badge numerici reali da Excel.
+- Fallback hardcoded: erano presenti badge demo MAC001/MAC002/MAC003, non coerenti con l’anagrafica reale.
+- Camera non ottimizzata: veniva presa la prima camera trovata, che spesso su tablet/telefono non è quella posteriore.
+- Rischio doppia lettura: il callback di scansione poteva confermare più volte lo stesso QR.
+- QR non standardizzato: non era definito un formato ufficiale unico per generazione e stampa.
+- Offline non blindato: la libreria html5-qrcode viene richiamata da CDN. Se non disponibile, il vecchio flusso si rompeva.
+
+2. Soluzione applicata
+- Parser QR robusto e tollerante.
+- Supporto a 3 formati:
+  a) badge puro numerico
+  b) QC|MAC|BADGE|NOME
+  c) JSON con badge e nome
+- Scelta preferenziale camera posteriore/rear/environment.
+- Blocco anti-doppia lettura.
+- Fallback a BarcodeDetector nativo quando disponibile.
+- Mantenuta la conferma manuale come backup sicuro.
+
+3. Formato QR ufficiale consigliato per macchiniste
+QC|MAC|000000000003643|CORVINO ANNUNZIATA
+
+Perché è il migliore:
+- semplice da generare
+- leggibile anche da umano
+- contiene badge + ruolo + nome
+- resta coerente con Excel locale
+
+4. Formato minimo supportato
+000000000003643
+
+5. Estensione futura login QC
+Formato consigliato:
+QC|QC|000000000004126|CASABURO CATERINA|CC
+
+Logica futura consigliata:
+- stesso parser unico
+- role = QC per login qualità
+- validazione su foglio “controllo qualità”
+- riconoscimento immediato utente senza password manuale opzionale
+- mantenere fallback user/password per continuità operativa
+
+6. Nota importante su offline reale
+La logica applicativa è offline-friendly.
+La scansione camera offline dipende però dal browser del tablet:
+- se supporta BarcodeDetector nativo, la scansione QR funziona offline senza dipendere dalla libreria esterna
+- se non lo supporta e non è caricata html5-qrcode, resta disponibile il fallback manuale
+
