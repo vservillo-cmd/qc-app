@@ -355,11 +355,11 @@
       </div>
       <p class="muted">Usa il QR se disponibile. Se la lettura non va, conferma dal campo manuale.</p>
       <div class="qr-actions">
-        <button id="btnStartScan" class="primary">Avvia scansione</button>
-        <button id="btnStopScan" class="secondary">Ferma</button>
+        <button id="btnStartScan" class="primary" type="button">Avvia scansione</button>
+        <button id="btnStopScan" class="secondary" type="button">Ferma</button>
       </div>
       <div id="scanStatus" class="msg">Stato: pronto</div>
-      <div id="reader"></div>
+      <div id="reader" class="reader-shell"><div id="readerOverlay" class="reader-overlay hidden"><img id="readerFreezeImg" alt="freeze" /><div class="reader-overlay-label">QR acquisito</div></div></div>
       <div class="manual-box">
         <label>Macchinista da elenco</label>
         <select id="machineBadgeSelect"><option value="">Seleziona badge</option></select>
@@ -369,7 +369,7 @@
         <input id="manualMachineName" type="text" placeholder="Nome Cognome" />
         <label>Nuovo badge macchinista</label>
         <input id="manualMachineBadgeNew" type="text" placeholder="Badge se nuova" />
-        <button id="btnConfirmBadge" class="success">Conferma codice</button>
+        <button id="btnConfirmBadge" class="success" type="button" disabled>Conferma codice</button>
       </div>
       <div class="demo-box">
         <strong>Codici demo validi</strong>

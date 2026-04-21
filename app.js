@@ -17,6 +17,7 @@ let html5QrCode = null;
 let scannerRunning = false;
 let scannerPauseLock = false;
 let lastDecodedBadge = "";
+let qrAcquiredState = false;
 
 let masterData = {
   postazioni: [],
@@ -324,17 +325,38 @@ function setReaderAcquiredState(active) {
   if (!reader) return;
   reader.classList.toggle("reader-acquired", !!active);
 }
-async function pauseScannerPreview() {
-  if (!html5QrCode || !scannerRunning || typeof html5QrCode.pause !== "function") return;
-  try {
-    html5QrCode.pause(true);
-  } catch (e) {}
+function setReaderOverlay(imageDataUrl = "") {
+  const overlay = $("readerOverlay");
+  const img = $("readerFreezeImg");
+  if (!overlay || !img) return;
+  if (imageDataUrl) {
+    img.src = imageDataUrl;
+    overlay.classList.remove("hidden");
+  } else {
+    img.removeAttribute("src");
+    overlay.classList.add("hidden");
+  }
 }
-async function resumeScannerPreview() {
-  if (!html5QrCode || !scannerRunning || typeof html5QrCode.resume !== "function") return;
+function captureReaderFrame() {
   try {
-    html5QrCode.resume();
-  } catch (e) {}
+    const reader = $("reader");
+    const video = reader ? reader.querySelector("video") : null;
+    if (!video || !video.videoWidth || !video.videoHeight) return "";
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return "";
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/png");
+  } catch (e) {
+    return "";
+  }
+}
+function setConfirmEnabled(enabled) {
+  const btn = $("btnConfirmBadge");
+  if (!btn) return;
+  btn.disabled = !enabled;
 }
 function applyScannedBadge(raw) {
   const code = normalizeCode(raw);
@@ -343,26 +365,33 @@ function applyScannedBadge(raw) {
   $("scanResult").textContent = code ? `Codice acquisito: ${code}` : "Codice non valido";
   if (!code) {
     $("scanStatus").textContent = "Stato: codice non valido";
+    setConfirmEnabled(false);
+    qrAcquiredState = false;
     return;
   }
   const found = findMachineByBadge(code);
+  qrAcquiredState = true;
   if (found) {
     $("machineBadgeSelect").value = String(found.badge || "").trim();
     $("manualMachineName").value = found.nome || "";
     $("manualMachineBadgeNew").value = String(found.badge || "").trim();
-    $("scanStatus").textContent = "Stato: QR acquisito · premi Conferma codice";
+    $("scanStatus").textContent = "Stato: QR acquisito · verifica i dati e premi Conferma codice";
+    setConfirmEnabled(true);
   } else {
     $("machineBadgeSelect").value = "";
     $("manualMachineName").value = "";
     $("manualMachineBadgeNew").value = code;
     $("scanStatus").textContent = "Stato: QR acquisito ma badge non trovato";
+    setConfirmEnabled(false);
   }
 }
 async function handleQrDecoded(decodedText) {
-  if (scannerPauseLock) return;
+  if (scannerPauseLock || qrAcquiredState) return;
   scannerPauseLock = true;
   setReaderAcquiredState(true);
-  await pauseScannerPreview();
+  const frozenFrame = captureReaderFrame();
+  if (frozenFrame) setReaderOverlay(frozenFrame);
+  await stopScanner(false);
   applyScannedBadge(decodedText);
 }
 function deriveTypeFromWorkstation(workstation) {
@@ -1634,8 +1663,11 @@ function closeDetailModal() {
 function openAttestModal(id) {
   currentAttestControlId = id;
   scannerPauseLock = false;
+  qrAcquiredState = false;
   lastDecodedBadge = "";
   setReaderAcquiredState(false);
+  setReaderOverlay("");
+  setConfirmEnabled(false);
   $("scanStatus").textContent = "Stato: pronto";
   $("scanResult").textContent = "";
   $("manualBadge").value = "";
@@ -1649,6 +1681,10 @@ async function closeAttestModal() {
   $("attestModal").classList.add("hidden");
 }
 async function confirmBadge(raw) {
+  if (!qrAcquiredState && !String($("manualMachineName").value || "").trim()) {
+    $("scanResult").textContent = "Acquisisci prima un QR oppure seleziona una macchinista.";
+    return;
+  }
   const selectedBadge = String($("machineBadgeSelect").value || "").trim();
   const manualNewBadge = String($("manualMachineBadgeNew").value || "").trim();
   const scannedOrTypedCode = selectedBadge || normalizeCode(raw || manualNewBadge || lastDecodedBadge);
@@ -1682,14 +1718,18 @@ async function confirmBadge(raw) {
   renderHistory();
   renderKpis();
   $("scanResult").textContent = `Attestazione acquisita: ${canonicalBadge}`;
+  qrAcquiredState = false;
   await closeAttestModal();
 }
 async function startScanner() {
   $("scanResult").textContent = "";
   $("scanStatus").textContent = "Stato: avvio scanner...";
   scannerPauseLock = false;
+  qrAcquiredState = false;
   lastDecodedBadge = "";
   setReaderAcquiredState(false);
+  setReaderOverlay("");
+  setConfirmEnabled(false);
   if (typeof Html5Qrcode === "undefined") {
     $("scanStatus").textContent = "Stato: libreria QR non caricata";
     return;
@@ -1721,10 +1761,15 @@ async function startScanner() {
     $("scanResult").textContent = String(err);
   }
 }
-async function stopScanner() {
-  setReaderAcquiredState(false);
-  scannerPauseLock = false;
-  lastDecodedBadge = "";
+async function stopScanner(resetUi = true) {
+  if (resetUi) {
+    setReaderAcquiredState(false);
+    scannerPauseLock = false;
+    qrAcquiredState = false;
+    lastDecodedBadge = "";
+    setReaderOverlay("");
+    setConfirmEnabled(false);
+  }
   if (!html5QrCode || !scannerRunning) return;
   try {
     await html5QrCode.stop();
@@ -1732,8 +1777,11 @@ async function stopScanner() {
   } catch(e) {
   } finally {
     scannerRunning = false;
-    $("scanStatus").textContent = "Stato: scanner fermato";
-    $("reader").innerHTML = "";
+    $("scanStatus").textContent = resetUi ? "Stato: scanner fermato" : $("scanStatus").textContent;
+    const reader = $("reader");
+    if (reader) {
+      reader.querySelectorAll('video, canvas:not(#readerFreezeImg)').forEach(el => el.remove());
+    }
   }
 }
 function importBackupFile(file) {
