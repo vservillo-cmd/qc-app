@@ -17,7 +17,11 @@ let html5QrCode = null;
 let scannerRunning = false;
 let scannerPauseLock = false;
 let lastDecodedBadge = "";
-let qrAcquiredState = false;
+let loginHtml5QrCode = null;
+let loginScannerRunning = false;
+let loginScannerPauseLock = false;
+let lastDecodedLoginBadge = "";
+let pendingLoginUser = null;
 
 let masterData = {
   postazioni: [],
@@ -75,7 +79,16 @@ function saveStorage() {
   localStorage.setItem("qc_gamma_orders", JSON.stringify(gammaOrders));
 }
 function loadStorage() {
-  controls = JSON.parse(localStorage.getItem("qc_controls") || "[]");
+  controls = JSON.parse(localStorage.getItem("qc_controls") || "[]").map(c => ({
+    qualityBadge: "",
+    qualityControlledAt: c?.createdAt || "",
+    machineOperator: null,
+    machineBadge: null,
+    machineAttestedAt: "",
+    attestationCount: 0,
+    traceLog: Array.isArray(c?.traceLog) ? c.traceLog : [],
+    ...c
+  }));
   anomalies = JSON.parse(localStorage.getItem("qc_anomalies") || "[]").map(a => ({
     actions: [],
     status: "Aperta",
@@ -285,114 +298,209 @@ function normalizeBadgeValue(raw) {
   }
   return txt;
 }
-function normalizeCode(raw) {
-  if (!raw) return "";
-  let txt = String(raw).trim();
-  if (!txt) return "";
+function parseQrPayload(raw) {
+  const result = { raw: String(raw ?? "").trim(), code: "", roleHint: "", parsedName: "", parsedUser: "" };
+  let txt = result.raw;
+  if (!txt) return result;
+
   try {
     if (txt.startsWith("{")) {
       const parsed = JSON.parse(txt);
-      txt = String(parsed.badge ?? parsed.Badge ?? parsed.id_badge ?? parsed.id ?? parsed.codice ?? parsed.value ?? txt).trim();
+      const typeValue = String(parsed.type ?? parsed.Type ?? parsed.role ?? parsed.Role ?? parsed.lista ?? "").trim().toUpperCase();
+      if (typeValue.includes("QC")) result.roleHint = "QC";
+      else if (typeValue.includes("MAC")) result.roleHint = "MAC";
+      result.code = String(parsed.badge ?? parsed.Badge ?? parsed.id_badge ?? parsed.id ?? parsed.codice ?? parsed.value ?? "").trim();
+      result.parsedName = String(parsed.name ?? parsed.nome ?? parsed.Nome ?? "").trim();
+      result.parsedUser = String(parsed.user ?? parsed.utente ?? parsed.Utente ?? "").trim();
+      txt = result.code || txt;
     }
   } catch (e) {}
 
-  if (/\|/.test(txt)) {
-    const parts = txt.split("|").map(v => String(v || "").trim()).filter(Boolean);
-    if (parts.length >= 3) txt = parts[2];
+  if (/\|/.test(result.raw)) {
+    const parts = result.raw.split("|").map(v => String(v || "").trim()).filter(Boolean);
+    if (parts.length >= 3) {
+      const scope = String(parts[1] || "").toUpperCase();
+      if (scope === "QC") result.roleHint = "QC";
+      else if (scope === "MAC") result.roleHint = "MAC";
+      result.code = String(parts[2] || "").trim();
+      if (parts[3]) result.parsedName = String(parts[3] || "").trim();
+      if (parts[4]) result.parsedUser = String(parts[4] || "").trim();
+      txt = result.code || txt;
+    }
   }
 
   const explicitBadge = txt.match(/(?:BADGE|QR|ID)\s*[:=]\s*([A-Z0-9]+)/i);
   if (explicitBadge) txt = explicitBadge[1];
 
   const macMatch = txt.match(/MAC\d{3,}/i);
-  if (macMatch) return macMatch[0].toUpperCase();
+  if (macMatch) {
+    result.code = macMatch[0].toUpperCase();
+    return { ...result, code: normalizeBadgeValue(result.code) };
+  }
 
   const digitMatches = txt.match(/\d+/g);
   if (digitMatches && digitMatches.length) {
     const longestDigits = digitMatches.sort((a, b) => b.length - a.length)[0];
-    return normalizeBadgeValue(longestDigits);
+    result.code = longestDigits;
+    return { ...result, code: normalizeBadgeValue(longestDigits) };
   }
 
-  return normalizeBadgeValue(txt);
+  result.code = txt;
+  return { ...result, code: normalizeBadgeValue(txt) };
+}
+function normalizeCode(raw) {
+  return parseQrPayload(raw).code;
 }
 function findMachineByBadge(raw) {
   const target = normalizeBadgeValue(raw);
   if (!target) return null;
   return (masterData.macchiniste || []).find(x => normalizeBadgeValue(x.badge) === target) || null;
 }
+function findQcUserByBadge(raw) {
+  const target = normalizeBadgeValue(raw);
+  if (!target) return null;
+  return Object.values(systemUsers || {}).find(x => normalizeBadgeValue(x.badge) === target) || null;
+}
+function badgeExistsInMachines(raw) {
+  return !!findMachineByBadge(raw);
+}
+function badgeExistsInQc(raw) {
+  return !!findQcUserByBadge(raw);
+}
 function setReaderAcquiredState(active) {
   const reader = $("reader");
   if (!reader) return;
   reader.classList.toggle("reader-acquired", !!active);
 }
-function setReaderOverlay(imageDataUrl = "") {
-  const overlay = $("readerOverlay");
-  const img = $("readerFreezeImg");
-  if (!overlay || !img) return;
-  if (imageDataUrl) {
-    img.src = imageDataUrl;
-    overlay.classList.remove("hidden");
-  } else {
-    img.removeAttribute("src");
-    overlay.classList.add("hidden");
-  }
+function setLoginReaderAcquiredState(active) {
+  const reader = $("loginReader");
+  if (!reader) return;
+  reader.classList.toggle("reader-acquired", !!active);
 }
-function captureReaderFrame() {
+async function pauseScannerPreview() {
+  if (!html5QrCode || !scannerRunning || typeof html5QrCode.pause !== "function") return;
   try {
-    const reader = $("reader");
-    const video = reader ? reader.querySelector("video") : null;
-    if (!video || !video.videoWidth || !video.videoHeight) return "";
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return "";
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/png");
-  } catch (e) {
-    return "";
-  }
+    html5QrCode.pause(true);
+  } catch (e) {}
 }
-function setConfirmEnabled(enabled) {
-  const btn = $("btnConfirmBadge");
-  if (!btn) return;
-  btn.disabled = !enabled;
+async function resumeScannerPreview() {
+  if (!html5QrCode || !scannerRunning || typeof html5QrCode.resume !== "function") return;
+  try {
+    html5QrCode.resume();
+  } catch (e) {}
 }
 function applyScannedBadge(raw) {
-  const code = normalizeCode(raw);
+  const payload = parseQrPayload(raw);
+  const code = payload.code;
   lastDecodedBadge = code;
   $("manualBadge").value = code;
   $("scanResult").textContent = code ? `Codice acquisito: ${code}` : "Codice non valido";
   if (!code) {
     $("scanStatus").textContent = "Stato: codice non valido";
-    setConfirmEnabled(false);
-    qrAcquiredState = false;
     return;
   }
-  const found = findMachineByBadge(code);
-  qrAcquiredState = true;
-  if (found) {
-    $("machineBadgeSelect").value = String(found.badge || "").trim();
-    $("manualMachineName").value = found.nome || "";
-    $("manualMachineBadgeNew").value = String(found.badge || "").trim();
-    $("scanStatus").textContent = "Stato: QR acquisito · verifica i dati e premi Conferma codice";
-    setConfirmEnabled(true);
+
+  const foundMachine = findMachineByBadge(code);
+  const foundQc = findQcUserByBadge(code);
+
+  if (payload.roleHint === "QC") {
+    $("machineBadgeSelect").value = "";
+    $("manualMachineName").value = "";
+    $("manualMachineBadgeNew").value = code;
+    $("btnConfirmBadge").disabled = true;
+    $("scanStatus").textContent = "Stato: badge QC non autorizzato per attestazione";
+    $("scanResult").textContent = "Badge non autorizzato: l'attestazione può essere fatta solo da macchiniste.";
+    return;
+  }
+
+  if (!payload.roleHint && foundMachine && foundQc) {
+    $("machineBadgeSelect").value = "";
+    $("manualMachineName").value = "";
+    $("manualMachineBadgeNew").value = code;
+    $("btnConfirmBadge").disabled = true;
+    $("scanStatus").textContent = "Stato: badge ambiguo";
+    $("scanResult").textContent = "Badge presente sia in macchiniste sia in QC: per attestazione usa il QR macchinista.";
+    return;
+  }
+
+  if (foundMachine) {
+    $("machineBadgeSelect").value = String(foundMachine.badge || "").trim();
+    $("manualMachineName").value = foundMachine.nome || "";
+    $("manualMachineBadgeNew").value = String(foundMachine.badge || "").trim();
+    $("btnConfirmBadge").disabled = false;
+    $("scanStatus").textContent = "Stato: QR acquisito · premi Conferma codice";
   } else {
     $("machineBadgeSelect").value = "";
     $("manualMachineName").value = "";
     $("manualMachineBadgeNew").value = code;
-    $("scanStatus").textContent = "Stato: QR acquisito ma badge non trovato";
-    setConfirmEnabled(false);
+    $("btnConfirmBadge").disabled = true;
+    $("scanStatus").textContent = "Stato: badge non autorizzato per attestazione";
   }
 }
 async function handleQrDecoded(decodedText) {
-  if (scannerPauseLock || qrAcquiredState) return;
+  if (scannerPauseLock) return;
   scannerPauseLock = true;
   setReaderAcquiredState(true);
-  const frozenFrame = captureReaderFrame();
-  if (frozenFrame) setReaderOverlay(frozenFrame);
-  await stopScanner(false);
+  await pauseScannerPreview();
   applyScannedBadge(decodedText);
+}
+function applyLoginScannedBadge(raw) {
+  const payload = parseQrPayload(raw);
+  const code = payload.code;
+  lastDecodedLoginBadge = code;
+  $("loginQrBadge").value = code;
+  $("loginScanResult").textContent = code ? `Codice acquisito: ${code}` : "Codice non valido";
+  if (!code) {
+    pendingLoginUser = null;
+    $("loginQrName").value = "";
+    $("btnConfirmLoginQr").disabled = true;
+    $("loginScanStatus").textContent = "Stato: codice non valido";
+    return;
+  }
+
+  const foundQc = findQcUserByBadge(code);
+  const foundMachine = findMachineByBadge(code);
+
+  if (payload.roleHint === "MAC") {
+    pendingLoginUser = null;
+    $("loginQrName").value = "";
+    $("btnConfirmLoginQr").disabled = true;
+    $("loginScanStatus").textContent = "Stato: badge macchinista non autorizzato per login QC";
+    $("loginScanResult").textContent = "Badge non autorizzato: questo QR appartiene a una macchinista, non a un operatore QC.";
+    return;
+  }
+
+  if (!payload.roleHint && foundQc && foundMachine) {
+    pendingLoginUser = null;
+    $("loginQrName").value = "";
+    $("btnConfirmLoginQr").disabled = true;
+    $("loginScanStatus").textContent = "Stato: badge ambiguo";
+    $("loginScanResult").textContent = "Badge presente sia in QC sia in macchiniste: per il login usa il QR QC.";
+    return;
+  }
+
+  if (foundQc) {
+    pendingLoginUser = foundQc;
+    $("loginQrBadge").value = String(foundQc.badge || "").trim();
+    $("loginQrName").value = foundQc.name || "";
+    $("btnConfirmLoginQr").disabled = false;
+    $("loginScanStatus").textContent = "Stato: QR acquisito · premi Conferma accesso";
+  } else {
+    pendingLoginUser = null;
+    $("loginQrName").value = "";
+    $("btnConfirmLoginQr").disabled = true;
+    $("loginScanStatus").textContent = "Stato: badge non autorizzato per login QC";
+    $("loginScanResult").textContent = "Badge non autorizzato: il login è consentito solo agli operatori QC.";
+  }
+}
+async function handleLoginQrDecoded(decodedText) {
+  if (loginScannerPauseLock) return;
+  loginScannerPauseLock = true;
+  setLoginReaderAcquiredState(true);
+  if (loginHtml5QrCode && loginScannerRunning && typeof loginHtml5QrCode.pause === "function") {
+    try { loginHtml5QrCode.pause(true); } catch (e) {}
+  }
+  applyLoginScannedBadge(decodedText);
 }
 function deriveTypeFromWorkstation(workstation) {
   const code = String(workstation || "").toUpperCase().trim();
@@ -1007,6 +1115,34 @@ function createAnomaliesFor(control) {
     });
   });
 }
+function renderTraceability() {
+  const box = $("traceList");
+  if (!box) return;
+  const items = controls
+    .flatMap(c => (Array.isArray(c.traceLog) ? c.traceLog.map(t => ({
+      controlId: c.id,
+      lot: c.lot || "-",
+      workstation: c.workstation || "-",
+      ...t
+    })) : []))
+    .sort((a, b) => String(b.at || "").localeCompare(String(a.at || ""), 'it'))
+    .slice(0, 5);
+
+  if (!items.length) {
+    box.innerHTML = 'Nessun evento registrato.';
+    return;
+  }
+
+  box.innerHTML = items.map(item => `
+    <div class="trace-item">
+      <strong>${item.at || '-'} · ${item.text || item.type || 'Evento'}</strong>
+      <div>Lotto: ${item.lot}</div>
+      <div>Postazione: ${item.workstation}</div>
+      <div>Operatore: ${item.by || '-'} ${item.badge ? `(${item.badge})` : ''}</div>
+    </div>
+  `).join('');
+}
+
 function renderHistory() {
   const body = $("historyBody");
   body.innerHTML = "";
@@ -1014,13 +1150,14 @@ function renderHistory() {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${c.createdAt}</td>
-      <td>${c.qualityUser}</td>
+      <td>${c.qualityUser}<br><span class="small-note">${c.qualityBadge || "-"}</span></td>
       <td>${c.shift}</td>
       <td>${c.workstation}</td>
       <td>${c.lot}</td>
       <td><span class="badge ${c.outcome === "OK" ? "badge-ok":"badge-ko"}">${c.outcome}</span></td>
       <td><span class="badge ${c.status === "Validato" ? "badge-valid":"badge-state"}">${c.status}</span></td>
-      <td>${c.machineBadge ? c.machineBadge : "Non attestata"}</td>
+      <td>${c.machineOperator ? `${c.machineOperator}<br><span class="small-note">${c.machineBadge || ""}</span>` : "Non attestata"}</td>
+      <td>${c.machineAttestedAt || "-"}</td>
       <td>
         <button class="secondary" onclick="openDetailModal('${c.id}')">Dettagli</button>
         ${c.status !== "Validato" ? `<button class="warning" onclick="openAttestModal('${c.id}')">Attesta QR</button>` : ``}
@@ -1096,10 +1233,13 @@ function clearForContinuousControl() {
 function saveControl() {
   applyToleranceAuto();
   applyMaterialValidation();
+  const createdAt = dateTimeString();
   const control = {
     id: crypto.randomUUID(),
-    createdAt: dateTimeString(),
+    createdAt,
+    qualityControlledAt: createdAt,
     qualityUser: currentUser.name,
+    qualityBadge: String(currentUser?.badge || "").trim(),
     shift: $("shift").value,
     workstation: ($("workstationNew").value || $("workstationSelect").value || "").trim(),
     stitchType: ($("stitchTypeNew").value || $("stitchTypeAuto").value || "").trim(),
@@ -1127,7 +1267,18 @@ function saveControl() {
     notesStatus: $("notesStatus").value,
     machineOperator: null,
     machineBadge: null,
-    status: "Da validare"
+    machineAttestedAt: "",
+    attestationCount: 0,
+    status: "Da validare",
+    traceLog: [{
+      id: crypto.randomUUID(),
+      type: "CONTROL_CREATED",
+      at: createdAt,
+      by: currentUser?.name || "",
+      badge: String(currentUser?.badge || "").trim(),
+      role: "QC",
+      text: "Controllo creato"
+    }]
   };
 
   const validationErrors = [];
@@ -1222,6 +1373,7 @@ function saveControl() {
   queueControlForSync(control);
   renderHistory();
   renderAnomalies();
+  renderTraceability();
   renderKpis();
   clearForContinuousControl();
   $("saveMsg").className = "msg ok";
@@ -1275,7 +1427,7 @@ function exportCsv() {
     "Codice_Filato_Ago","Codice_Filato_Ago_Esito","Codice_Filato_Crochet","Codice_Filato_Crochet_Esito","Ago_Codice","Ago_Esito","Cambio_Ago",
     "Note","Esito_Note","Esito_Complessivo","KO_Flag","OK_Flag",
     "Numero_KO_Misure","Numero_KO_Qualitativi","Numero_KO_Materiali","Numero_KO_Totali",
-    "Stato_Validazione","Validato_Flag","Badge_Macchinista","DataOra_Attestazione","Attestato_Flag",
+    "Stato_Validazione","Validato_Flag","Operatrice_Qualita_Badge","Badge_Macchinista","Macchinista_Nome","DataOra_Attestazione","Attestato_Flag","Numero_Attestazioni",
     "Numero_Anomalie","Anomalia_Bordo","Anomalia_Passo","Anomalia_Tacche","Anomalia_Fermapunto","Anomalia_Punti_Saltati","Anomalia_Ago_Spuntato","Anomalia_Filato_Ago","Anomalia_Filato_Crochet","Anomalia_Ago","Anomalia_Note"
   ];
 
@@ -1329,9 +1481,12 @@ function exportCsv() {
       ko.total,
       c.status || "",
       c.status === "Validato" ? 1 : 0,
+      badgeForCsv(c.qualityBadge),
       badgeForCsv(c.machineBadge),
+      c.machineOperator || "",
       c.machineAttestedAt || "",
       c.machineBadge ? 1 : 0,
+      c.attestationCount || 0,
       anomaliesForControl.length,
       anomalyTypes.has("Bordo cucitura KO") ? 1 : 0,
       anomalyTypes.has("Passo punto KO") ? 1 : 0,
@@ -1357,7 +1512,7 @@ function exportCsv() {
 function exportKpi() {
   const delimiter = ";";
   const header = [
-    "Data","Ora","Turno","Linea","Postazione","Macchina","Risorsa_Qualita","Badge_Macchinista",
+    "Data","Ora","Turno","Linea","Postazione","Macchina","Risorsa_Qualita","Badge_Qualita","Badge_Macchinista","Macchinista",
     "Codice_Prodotto","Particolare","Lotto","Esito_Complessivo","Stato_Controllo",
     "Categoria_KO","Tipo_KO","Dettaglio_KO","Valore_Rilevato","Valore_Atteso","Severita","Anomalia_Stato"
   ];
@@ -1399,7 +1554,9 @@ function exportKpi() {
         c.workstation || "",
         c.workstation || "",
         c.qualityUser || "",
+        badgeForCsv(c.qualityBadge),
         badgeForCsv(c.machineBadge),
+        c.machineOperator || "",
         c.setupCode || "",
         c.particular || "",
         c.lot || "",
@@ -1425,7 +1582,9 @@ function exportKpi() {
         c.workstation || "",
         c.workstation || "",
         c.qualityUser || "",
+        badgeForCsv(c.qualityBadge),
         badgeForCsv(c.machineBadge),
+        c.machineOperator || "",
         c.setupCode || "",
         c.particular || "",
         c.lot || "",
@@ -1591,6 +1750,7 @@ function saveAnomalyAction(shouldClose=false) {
   const related = controls.find(c => c.id === anomaly.controlId);
   if (related) queueControlForSync(related);
   renderAnomalies();
+  renderTraceability();
   renderKpis();
   $("anomalyActionText").value = "";
   $("anomalyActionNotes").value = "";
@@ -1618,6 +1778,7 @@ function openDetailModal(id) {
     section("Intestazione", [
       ["Data/Ora", c.createdAt],
       ["Operatrice qualità", c.qualityUser],
+      ["Badge operatrice qualità", c.qualityBadge || "-"],
       ["Turno", c.shift],
       ["Postazione", c.workstation],
       ["Tipo cucitura", c.stitchType],
@@ -1646,7 +1807,9 @@ function openDetailModal(id) {
       ["Esito complessivo", c.outcome],
       ["Stato validazione", c.status],
       ["Badge macchinista", c.machineBadge || "Non attestata"],
-      ["Data/Ora attestazione", c.machineAttestedAt || "-"]
+      ["Macchinista", c.machineOperator || "Non attestata"],
+      ["Data/Ora attestazione", c.machineAttestedAt || "-"],
+      ["Numero attestazioni", String(c.attestationCount || 0)]
     ]),
     section("Note", [
       ["Note", c.notes || "-"],
@@ -1663,17 +1826,15 @@ function closeDetailModal() {
 function openAttestModal(id) {
   currentAttestControlId = id;
   scannerPauseLock = false;
-  qrAcquiredState = false;
   lastDecodedBadge = "";
   setReaderAcquiredState(false);
-  setReaderOverlay("");
-  setConfirmEnabled(false);
   $("scanStatus").textContent = "Stato: pronto";
   $("scanResult").textContent = "";
   $("manualBadge").value = "";
   $("manualMachineName").value = "";
   $("manualMachineBadgeNew").value = "";
   $("machineBadgeSelect").selectedIndex = 0;
+  $("btnConfirmBadge").disabled = true;
   $("attestModal").classList.remove("hidden");
 }
 async function closeAttestModal() {
@@ -1681,55 +1842,65 @@ async function closeAttestModal() {
   $("attestModal").classList.add("hidden");
 }
 async function confirmBadge(raw) {
-  if (!qrAcquiredState && !String($("manualMachineName").value || "").trim()) {
-    $("scanResult").textContent = "Acquisisci prima un QR oppure seleziona una macchinista.";
-    return;
-  }
   const selectedBadge = String($("machineBadgeSelect").value || "").trim();
-  const manualNewBadge = String($("manualMachineBadgeNew").value || "").trim();
-  const scannedOrTypedCode = selectedBadge || normalizeCode(raw || manualNewBadge || lastDecodedBadge);
+  const scannedOrTypedCode = selectedBadge || normalizeCode(raw || lastDecodedBadge);
   const control = controls.find(x => x.id === currentAttestControlId);
   if (!control) {
     $("scanResult").textContent = "Controllo non trovato.";
     return;
   }
-
-  let operatorName = null;
-  const found = findMachineByBadge(scannedOrTypedCode);
-  const canonicalBadge = found ? String(found.badge || "").trim() : scannedOrTypedCode;
-  if (found) operatorName = found.nome;
-  if (!found && BADGES[canonicalBadge]) operatorName = BADGES[canonicalBadge];
-  if (!operatorName && BADGES[scannedOrTypedCode]) operatorName = BADGES[scannedOrTypedCode];
-  if (!operatorName && $("manualMachineName").value.trim() && $("manualMachineBadgeNew").value.trim()) {
-    operatorName = $("manualMachineName").value.trim();
-  }
-
-  if (!canonicalBadge || !operatorName) {
-    $("scanResult").textContent = "Macchinista non riconosciuta.";
+  if (control.machineBadge || Number(control.attestationCount || 0) > 0 || control.status === "Validato") {
+    $("scanResult").textContent = "Attestazione già registrata per questo controllo.";
+    $("btnConfirmBadge").disabled = true;
     return;
   }
 
+  const payload = parseQrPayload(raw || lastDecodedBadge || scannedOrTypedCode);
+  if (payload.roleHint === "QC") {
+    $("scanResult").textContent = "Badge non autorizzato: l'attestazione può essere fatta solo da una macchinista.";
+    return;
+  }
+  const found = findMachineByBadge(scannedOrTypedCode);
+  const foundQc = findQcUserByBadge(scannedOrTypedCode);
+  if (!found || (!payload.roleHint && found && foundQc)) {
+    $("scanResult").textContent = (!payload.roleHint && found && foundQc)
+      ? "Badge presente sia in macchiniste sia in QC: per attestazione usa il QR macchinista."
+      : "Badge non autorizzato: l'attestazione può essere fatta solo da macchiniste presenti in elenco.";
+    return;
+  }
+
+  const canonicalBadge = String(found.badge || "").trim();
+  const operatorName = found.nome || "";
+  const attestedAt = dateTimeString();
   control.machineBadge = canonicalBadge;
   control.machineOperator = operatorName;
-  control.machineAttestedAt = dateTimeString();
+  control.machineAttestedAt = attestedAt;
+  control.attestationCount = 1;
   control.status = "Validato";
+  control.traceLog = Array.isArray(control.traceLog) ? control.traceLog : [];
+  control.traceLog.push({
+    id: crypto.randomUUID(),
+    type: "CONTROL_ATTESTED",
+    at: attestedAt,
+    by: operatorName,
+    badge: canonicalBadge,
+    role: "MAC",
+    text: "Controllo attestato da macchinista"
+  });
   saveStorage();
   queueControlForSync(control);
   renderHistory();
+  renderTraceability();
   renderKpis();
   $("scanResult").textContent = `Attestazione acquisita: ${canonicalBadge}`;
-  qrAcquiredState = false;
   await closeAttestModal();
 }
 async function startScanner() {
   $("scanResult").textContent = "";
   $("scanStatus").textContent = "Stato: avvio scanner...";
   scannerPauseLock = false;
-  qrAcquiredState = false;
   lastDecodedBadge = "";
   setReaderAcquiredState(false);
-  setReaderOverlay("");
-  setConfirmEnabled(false);
   if (typeof Html5Qrcode === "undefined") {
     $("scanStatus").textContent = "Stato: libreria QR non caricata";
     return;
@@ -1761,15 +1932,10 @@ async function startScanner() {
     $("scanResult").textContent = String(err);
   }
 }
-async function stopScanner(resetUi = true) {
-  if (resetUi) {
-    setReaderAcquiredState(false);
-    scannerPauseLock = false;
-    qrAcquiredState = false;
-    lastDecodedBadge = "";
-    setReaderOverlay("");
-    setConfirmEnabled(false);
-  }
+async function stopScanner() {
+  setReaderAcquiredState(false);
+  scannerPauseLock = false;
+  lastDecodedBadge = "";
   if (!html5QrCode || !scannerRunning) return;
   try {
     await html5QrCode.stop();
@@ -1777,11 +1943,8 @@ async function stopScanner(resetUi = true) {
   } catch(e) {
   } finally {
     scannerRunning = false;
-    $("scanStatus").textContent = resetUi ? "Stato: scanner fermato" : $("scanStatus").textContent;
-    const reader = $("reader");
-    if (reader) {
-      reader.querySelectorAll('video, canvas:not(#readerFreezeImg)').forEach(el => el.remove());
-    }
+    $("scanStatus").textContent = "Stato: scanner fermato";
+    $("reader").innerHTML = "";
   }
 }
 function importBackupFile(file) {
@@ -1812,6 +1975,93 @@ function importBackupFile(file) {
     }
   };
   reader.readAsText(file);
+}
+function openLoginQrModal() {
+  pendingLoginUser = null;
+  lastDecodedLoginBadge = "";
+  loginScannerPauseLock = false;
+  setLoginReaderAcquiredState(false);
+  $("loginQrBadge").value = "";
+  $("loginQrName").value = "";
+  $("loginScanStatus").textContent = "Stato: pronto";
+  $("loginScanResult").textContent = "";
+  $("btnConfirmLoginQr").disabled = true;
+  $("loginQrModal").classList.remove("hidden");
+}
+async function closeLoginQrModal() {
+  await stopLoginScanner();
+  $("loginQrModal").classList.add("hidden");
+}
+async function startLoginScanner() {
+  $("loginScanResult").textContent = "";
+  $("loginScanStatus").textContent = "Stato: avvio scanner...";
+  loginScannerPauseLock = false;
+  lastDecodedLoginBadge = "";
+  pendingLoginUser = null;
+  $("btnConfirmLoginQr").disabled = true;
+  setLoginReaderAcquiredState(false);
+  if (typeof Html5Qrcode === "undefined") {
+    $("loginScanStatus").textContent = "Stato: libreria QR non caricata";
+    return;
+  }
+  if (loginScannerRunning) {
+    try { if (loginHtml5QrCode && typeof loginHtml5QrCode.resume === "function") await loginHtml5QrCode.resume(); } catch (e) {}
+    $("loginScanStatus").textContent = "Stato: camera attiva";
+    return;
+  }
+  try {
+    loginHtml5QrCode = new Html5Qrcode("loginReader");
+    const cameras = await Html5Qrcode.getCameras();
+    if (!cameras || cameras.length === 0) {
+      $("loginScanStatus").textContent = "Stato: nessuna camera trovata";
+      return;
+    }
+    const preferredCamera = cameras.find(c => /back|rear|environment/i.test(`${c.label || ""} ${c.id || ""}`)) || cameras[0];
+    loginScannerRunning = true;
+    $("loginScanStatus").textContent = "Stato: camera attiva";
+    await loginHtml5QrCode.start(
+      preferredCamera.id,
+      { fps: 10, qrbox: { width: 240, height: 240 } },
+      decodedText => handleLoginQrDecoded(decodedText),
+      _err => {}
+    );
+  } catch (err) {
+    loginScannerRunning = false;
+    $("loginScanStatus").textContent = "Stato: errore scanner";
+    $("loginScanResult").textContent = String(err);
+  }
+}
+async function stopLoginScanner() {
+  setLoginReaderAcquiredState(false);
+  loginScannerPauseLock = false;
+  lastDecodedLoginBadge = "";
+  pendingLoginUser = null;
+  if (!loginHtml5QrCode || !loginScannerRunning) return;
+  try {
+    await loginHtml5QrCode.stop();
+    await loginHtml5QrCode.clear();
+  } catch (e) {
+  } finally {
+    loginScannerRunning = false;
+    $("loginScanStatus").textContent = "Stato: scanner fermato";
+    $("loginReader").innerHTML = "";
+  }
+}
+async function confirmLoginQr() {
+  if (!pendingLoginUser) {
+    $("loginScanResult").textContent = "Badge QC non riconosciuto.";
+    return;
+  }
+  currentUser = pendingLoginUser;
+  await closeLoginQrModal();
+  $("loginMsg").textContent = "";
+  $("loginView").classList.add("hidden");
+  $("appView").classList.remove("hidden");
+  $("loggedUser").textContent = currentUser.name;
+  $("todayDate").textContent = todayString();
+  renderSyncStatus();
+  updateDataSourceStatus();
+  focusIfEnabled("workstationSelect");
 }
 function login() {
   const u = $("loginUser").value.trim();
@@ -1845,10 +2095,12 @@ window.openAnomalyModal = openAnomalyModal;
 window.closeAnomalyModal = closeAnomalyModal;
 window.openAttestModal = openAttestModal;
 window.closeAttestModal = closeAttestModal;
+window.closeLoginQrModal = closeLoginQrModal;
 
 window.addEventListener("DOMContentLoaded", () => {
   // Bind critical actions first
   $("btnLogin").addEventListener("click", login);
+  $("btnOpenLoginQr").addEventListener("click", openLoginQrModal);
   $("btnBootstrapImport").addEventListener("click", () => $("bootstrapAnagraficheFile").click());
   $("bootstrapAnagraficheFile").addEventListener("change", (e) => importBootstrapAnagraficheFile(e.target.files[0]));
   $("btnLogout").addEventListener("click", logout);
@@ -1879,6 +2131,9 @@ window.addEventListener("DOMContentLoaded", () => {
   $("btnStartScan").addEventListener("click", startScanner);
   $("btnStopScan").addEventListener("click", stopScanner);
   $("btnConfirmBadge").addEventListener("click", () => confirmBadge($("manualBadge").value));
+  $("btnStartLoginScan").addEventListener("click", startLoginScanner);
+  $("btnStopLoginScan").addEventListener("click", stopLoginScanner);
+  $("btnConfirmLoginQr").addEventListener("click", confirmLoginQr);
   $("btnRetrySync").addEventListener("click", attemptSync);
   window.addEventListener("online", () => { syncMeta.lastError = ""; renderSyncStatus(); scheduleSync(); });
   window.addEventListener("offline", renderSyncStatus);
@@ -1895,6 +2150,7 @@ window.addEventListener("DOMContentLoaded", () => {
     updateToleranceInfo();
     renderHistory();
     renderAnomalies();
+    renderTraceability();
     renderKpis();
     renderSyncStatus();
     scheduleSync();

@@ -29,9 +29,35 @@
         <input id="loginUser" type="text" autocomplete="username" />
         <label>Password</label>
         <input id="loginPass" type="password" autocomplete="current-password" />
-        <button id="btnLogin" class="primary full" type="button">Entra</button>
+        <div class="qr-actions">
+          <button id="btnLogin" class="primary full" type="button">Entra</button>
+          <button id="btnOpenLoginQr" class="secondary full" type="button">Login con QR</button>
+        </div>
         <div id="loginMsg" class="msg"></div>
       </div>
+    </div>
+  </div>
+  <div id="loginQrModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Login operatrice qualità via QR</h3>
+        <button class="secondary" onclick="closeLoginQrModal()">Chiudi</button>
+      </div>
+      <p class="muted">Il login è consentito solo ai badge presenti nel foglio <strong>controllo qualità</strong>. I badge macchinista non sono validi in questa fase.</p>
+      <div class="qr-actions">
+        <button id="btnStartLoginScan" class="primary">Avvia scansione</button>
+        <button id="btnStopLoginScan" class="secondary">Ferma</button>
+      </div>
+      <div id="loginScanStatus" class="msg">Stato: pronto</div>
+      <div id="loginReader"></div>
+      <div class="manual-box">
+        <label>Badge QC riconosciuto</label>
+        <input id="loginQrBadge" type="text" readonly />
+        <label>Operatrice QC riconosciuta</label>
+        <input id="loginQrName" type="text" readonly />
+        <button id="btnConfirmLoginQr" class="success" disabled>Conferma accesso</button>
+      </div>
+      <div id="loginScanResult" class="msg"></div>
     </div>
   </div>
 
@@ -299,6 +325,11 @@
       </section>
 
       <section class="card">
+        <h2>Ultimi eventi tracciati</h2>
+        <div id="traceList" class="trace-list muted">Nessun evento registrato.</div>
+      </section>
+
+      <section class="card">
         <h2>Storico controlli</h2>
         <table>
           <thead>
@@ -310,7 +341,8 @@
               <th>Lotto</th>
               <th>Esito</th>
               <th>Stato</th>
-              <th>Badge macchinista</th>
+              <th>Macchinista</th>
+              <th>Attestata il</th>
               <th>Azioni</th>
             </tr>
           </thead>
@@ -355,11 +387,11 @@
       </div>
       <p class="muted">Usa il QR se disponibile. Se la lettura non va, conferma dal campo manuale.</p>
       <div class="qr-actions">
-        <button id="btnStartScan" class="primary" type="button">Avvia scansione</button>
-        <button id="btnStopScan" class="secondary" type="button">Ferma</button>
+        <button id="btnStartScan" class="primary">Avvia scansione</button>
+        <button id="btnStopScan" class="secondary">Ferma</button>
       </div>
       <div id="scanStatus" class="msg">Stato: pronto</div>
-      <div id="reader" class="reader-shell"><div id="readerOverlay" class="reader-overlay hidden"><img id="readerFreezeImg" alt="freeze" /><div class="reader-overlay-label">QR acquisito</div></div></div>
+      <div id="reader"></div>
       <div class="manual-box">
         <label>Macchinista da elenco</label>
         <select id="machineBadgeSelect"><option value="">Seleziona badge</option></select>
@@ -369,7 +401,7 @@
         <input id="manualMachineName" type="text" placeholder="Nome Cognome" />
         <label>Nuovo badge macchinista</label>
         <input id="manualMachineBadgeNew" type="text" placeholder="Badge se nuova" />
-        <button id="btnConfirmBadge" class="success" type="button" disabled>Conferma codice</button>
+        <button id="btnConfirmBadge" class="success">Conferma codice</button>
       </div>
       <div class="demo-box">
         <strong>Codici demo validi</strong>
