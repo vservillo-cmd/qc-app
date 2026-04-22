@@ -324,9 +324,15 @@
         </div>
       </section>
 
-      <section class="card">
-        <h2>Ultimi eventi tracciati</h2>
-        <div id="traceList" class="trace-list muted">Nessun evento registrato.</div>
+      <section class="card trace-card is-collapsed" id="traceCard">
+        <button type="button" class="trace-toggle" id="traceToggle" aria-expanded="false">
+          <div>
+            <h2>Ultimi eventi tracciati</h2>
+            <div id="traceSummary" class="trace-summary muted" hidden>Nessun evento registrato.</div>
+          </div>
+          <span class="trace-toggle-icon" id="traceToggleIcon">▸</span>
+        </button>
+        <div id="traceList" class="trace-list muted" hidden>Nessun evento registrato.</div>
       </section>
 
       <section class="card">
@@ -436,12 +442,18 @@
           </div>
         </div>
         <label>Azione correttiva</label>
-        <textarea id="anomalyActionText" rows="4" placeholder="Descrivere l'azione eseguita"></textarea>
+        <textarea id="anomalyActionText" rows="3" placeholder="Descrivere l'azione eseguita (facoltativo se aggiorni solo note o stato)"></textarea>
         <label>Note</label>
-        <textarea id="anomalyActionNotes" rows="3" placeholder="Note aggiuntive"></textarea>
+        <textarea id="anomalyActionNotes" rows="2" placeholder="Note aggiuntive"></textarea>
+      </div>
+      <div class="detail-section full">
+        <h4>Storico azioni</h4>
+        <div id="anomalyActionsHistory" class="detail-grid"></div>
+      </div>
+      <div class="detail-section full anomaly-footer">
         <div class="close-gate-row">
           <div class="close-gate-box">
-            <label>Verifica dopo azione</label>
+            <label>Esito verifica</label>
             <select id="anomalyVerifyOutcome">
               <option value="IN CORSO">In corso</option>
               <option value="OK">OK</option>
@@ -449,15 +461,11 @@
             </select>
           </div>
           <div class="actions-row compact-actions">
-            <button id="btnSaveAnomalyAction" class="primary" type="button">Salva aggiornamento</button>
-            <button id="btnCloseAnomaly" class="success" type="button">Salva e chiudi</button>
+            <button id="btnSaveAnomalyAction" class="primary" type="button">Salva avanzamento</button>
+            <button id="btnCloseAnomaly" class="success" type="button">Chiudi anomalia</button>
           </div>
         </div>
         <div id="anomalyMsg" class="msg"></div>
-      </div>
-      <div class="detail-section full">
-        <h4>Storico azioni</h4>
-        <div id="anomalyActionsHistory" class="detail-grid"></div>
       </div>
     </div>
   </div>

@@ -361,11 +361,75 @@ function findQcUserByBadge(raw) {
   if (!target) return null;
   return Object.values(systemUsers || {}).find(x => normalizeBadgeValue(x.badge) === target) || null;
 }
+function resolveMachineCandidate(raw) {
+  const payload = parseQrPayload(raw);
+  const direct = findMachineByBadge(payload.code || raw);
+  if (direct) return direct;
+  const typed = normalizeBadgeValue(raw);
+  if (!typed) return null;
+  return (masterData.macchiniste || []).find(x => {
+    const badge = normalizeBadgeValue(x.badge);
+    return badge === typed || badge.endsWith(typed) || typed.endsWith(badge);
+  }) || null;
+}
+function resolveQcCandidate(raw) {
+  const payload = parseQrPayload(raw);
+  const direct = findQcUserByBadge(payload.code || raw);
+  if (direct) return direct;
+  const typed = normalizeBadgeValue(raw);
+  if (!typed) return null;
+  return Object.values(systemUsers || {}).find(x => {
+    const badge = normalizeBadgeValue(x.badge);
+    return badge === typed || badge.endsWith(typed) || typed.endsWith(badge);
+  }) || null;
+}
 function badgeExistsInMachines(raw) {
   return !!findMachineByBadge(raw);
 }
 function badgeExistsInQc(raw) {
   return !!findQcUserByBadge(raw);
+}
+function sanitizeControlsAgainstRoleLists() {
+  let changed = false;
+  controls = (controls || []).map(control => {
+    const c = { ...control };
+    const machineBadge = String(c.machineBadge || "").trim();
+    if (!machineBadge) return c;
+
+    const foundMachine = findMachineByBadge(machineBadge);
+    const foundMachineQc = findQcUserByBadge(machineBadge);
+    const invalidMachineAttestation = !foundMachine || !!foundMachineQc;
+
+    if (invalidMachineAttestation) {
+      c.machineOperator = null;
+      c.machineBadge = null;
+      c.machineAttestedAt = "";
+      c.attestationCount = 0;
+      c.status = "Da validare";
+      c.traceLog = Array.isArray(c.traceLog) ? c.traceLog.filter(ev => String(ev?.type || "") !== "CONTROL_ATTESTED") : [];
+      c.traceLog.push({
+        id: crypto.randomUUID(),
+        type: "CONTROL_ATTESTATION_RESET",
+        at: dateTimeString(),
+        by: "SYSTEM",
+        badge: machineBadge,
+        role: "SYSTEM",
+        text: "Attestazione rimossa: badge non valido per ruolo macchinista"
+      });
+      changed = true;
+      return c;
+    }
+
+    const canonicalBadge = String(foundMachine.badge || "").trim();
+    const canonicalName = foundMachine.nome || c.machineOperator || "";
+    if (canonicalBadge !== machineBadge || canonicalName !== (c.machineOperator || "")) {
+      c.machineBadge = canonicalBadge;
+      c.machineOperator = canonicalName;
+      changed = true;
+    }
+    return c;
+  });
+  if (changed) saveStorage();
 }
 function setReaderAcquiredState(active) {
   const reader = $("reader");
@@ -400,10 +464,10 @@ function applyScannedBadge(raw) {
     return;
   }
 
-  const foundMachine = findMachineByBadge(code);
-  const foundQc = findQcUserByBadge(code);
+  const foundMachine = resolveMachineCandidate(code);
+  const foundQc = resolveQcCandidate(code);
 
-  if (payload.roleHint === "QC") {
+  if (payload.roleHint === "QC" && !foundMachine) {
     $("machineBadgeSelect").value = "";
     $("manualMachineName").value = "";
     $("manualMachineBadgeNew").value = code;
@@ -413,7 +477,7 @@ function applyScannedBadge(raw) {
     return;
   }
 
-  if (!payload.roleHint && foundMachine && foundQc) {
+  if (!payload.roleHint && foundMachine && foundQc && normalizeBadgeValue(foundMachine.badge) === normalizeBadgeValue(foundQc.badge)) {
     $("machineBadgeSelect").value = "";
     $("manualMachineName").value = "";
     $("manualMachineBadgeNew").value = code;
@@ -429,12 +493,14 @@ function applyScannedBadge(raw) {
     $("manualMachineBadgeNew").value = String(foundMachine.badge || "").trim();
     $("btnConfirmBadge").disabled = false;
     $("scanStatus").textContent = "Stato: QR acquisito · premi Conferma codice";
+    $("scanResult").textContent = `Macchinista riconosciuta: ${foundMachine.nome || foundMachine.badge}`;
   } else {
     $("machineBadgeSelect").value = "";
     $("manualMachineName").value = "";
     $("manualMachineBadgeNew").value = code;
     $("btnConfirmBadge").disabled = true;
     $("scanStatus").textContent = "Stato: badge non autorizzato per attestazione";
+    $("scanResult").textContent = "Badge non autorizzato: l'attestazione può essere fatta solo da macchiniste presenti in elenco.";
   }
 }
 async function handleQrDecoded(decodedText) {
@@ -875,6 +941,7 @@ function importAnagraficheFile(file) {
       masterData = candidate;
       saveStoredUsers(qcUsers, dateTimeString());
       saveStorage();
+      sanitizeControlsAgainstRoleLists();
       populateMasterSelects();
       updateAutoType();
       populateMasterSelects();
@@ -945,18 +1012,35 @@ function syncMachineSelectionPreview() {
   const sel = $("machineBadgeSelect");
   const nameField = $("manualMachineName");
   const badgeField = $("manualBadge");
-  if (!sel || !nameField || !badgeField) return;
+  const machineBadgeNew = $("manualMachineBadgeNew");
+  if (!sel || !nameField || !badgeField || !machineBadgeNew) return;
   const selectedBadge = String(sel.value || "").trim();
   if (!selectedBadge) return;
-  const found = (masterData.macchiniste || []).find(x => String(x.badge || "").trim() === selectedBadge);
+  const found = resolveMachineCandidate(selectedBadge);
   if (!found) return;
   nameField.value = found.nome || "";
-  badgeField.value = selectedBadge;
+  badgeField.value = String(found.badge || "").trim();
+  machineBadgeNew.value = String(found.badge || "").trim();
+  $("btnConfirmBadge").disabled = false;
+}
+function reconcileAttestationCandidateFromInputs() {
+  const raw = String($("manualMachineBadgeNew")?.value || $("manualBadge")?.value || "").trim();
+  if (!raw) return;
+  const found = resolveMachineCandidate(raw);
+  if (!found) return;
+  $("machineBadgeSelect").value = String(found.badge || "").trim();
+  $("manualMachineName").value = found.nome || "";
+  $("manualBadge").value = normalizeBadgeValue(found.badge);
+  $("manualMachineBadgeNew").value = String(found.badge || "").trim();
+  $("btnConfirmBadge").disabled = false;
+  $("scanStatus").textContent = "Stato: macchinista riconosciuta · premi Conferma codice";
 }
 
 function initSmartFocus() {
   $("workstationSelect").addEventListener("change", () => { populateGammaLots(); resetGammaDependentFields(); focusIfEnabled("lot"); });
   $("machineBadgeSelect")?.addEventListener("change", syncMachineSelectionPreview);
+  $("manualMachineBadgeNew")?.addEventListener("input", reconcileAttestationCandidateFromInputs);
+  $("manualMachineBadgeNew")?.addEventListener("blur", reconcileAttestationCandidateFromInputs);
 
   const lotInput = $("lot");
   const moveLotToSetupCode = () => {
@@ -1115,8 +1199,30 @@ function createAnomaliesFor(control) {
     });
   });
 }
-function renderTraceability() {
+function toggleTraceability(forceExpanded = null) {
+  const card = $("traceCard");
   const box = $("traceList");
+  const btn = $("traceToggle");
+  const summary = $("traceSummary");
+  if (!card || !box || !btn) return;
+  const shouldExpand = forceExpanded === null ? card.classList.contains("is-collapsed") : !!forceExpanded;
+  card.classList.toggle("is-collapsed", !shouldExpand);
+  box.hidden = !shouldExpand;
+  if (summary) summary.hidden = shouldExpand;
+  btn.setAttribute("aria-expanded", shouldExpand ? "true" : "false");
+}
+
+function bindTraceabilityToggle() {
+  const btn = $("traceToggle");
+  if (!btn || btn.dataset.bound === "1") return;
+  btn.dataset.bound = "1";
+  btn.addEventListener("click", () => toggleTraceability());
+}
+
+function renderTraceability() {
+  bindTraceabilityToggle();
+  const box = $("traceList");
+  const summary = $("traceSummary");
   if (!box) return;
   const items = controls
     .flatMap(c => (Array.isArray(c.traceLog) ? c.traceLog.map(t => ({
@@ -1129,16 +1235,25 @@ function renderTraceability() {
     .slice(0, 5);
 
   if (!items.length) {
+    if (summary) summary.textContent = 'Nessun evento registrato.';
     box.innerHTML = 'Nessun evento registrato.';
+    toggleTraceability(false);
     return;
   }
+
+  const latest = items[0];
+  if (summary) {
+    const whoLabel = latest.role === "QC" ? "QC" : latest.role === "MAC" ? "Macchinista" : "Operatore";
+    summary.textContent = `Ultimo evento: ${latest.at || '-'} · ${latest.text || latest.type || 'Evento'} · ${whoLabel}: ${latest.by || '-'}`;
+  }
+  toggleTraceability(false);
 
   box.innerHTML = items.map(item => `
     <div class="trace-item">
       <strong>${item.at || '-'} · ${item.text || item.type || 'Evento'}</strong>
       <div>Lotto: ${item.lot}</div>
       <div>Postazione: ${item.workstation}</div>
-      <div>Operatore: ${item.by || '-'} ${item.badge ? `(${item.badge})` : ''}</div>
+      <div>${item.role === "QC" ? "QC" : item.role === "MAC" ? "Macchinista" : "Operatore"}: ${item.by || '-'} ${item.badge ? `(${item.badge})` : ''}</div>
     </div>
   `).join('');
 }
@@ -1645,6 +1760,12 @@ function applyVerifyOutcomeVisualState() {
   else sel.classList.add("state-progress");
 }
 
+function anomalyHasPositiveVerification(anomaly) {
+  if (!anomaly || !Array.isArray(anomaly.actions)) return false;
+  return anomaly.actions.some(a => String(a?.verifyOutcome || "").trim().toUpperCase() === "OK");
+}
+
+
 function getDerivedAnomalyStatus(anomaly) {
   if (!anomaly) return "Aperta";
   if (anomaly.status === "Chiusa" || anomaly.closedAt) return "Chiusa";
@@ -1655,8 +1776,13 @@ function refreshAnomalyCloseButton() {
   const anomaly = getAnomalyById(currentAnomalyId);
   if (!anomaly) return;
   const text = String($("anomalyActionText").value || "").trim();
+  const notes = String($("anomalyActionNotes").value || "").trim();
   const verifyOutcome = String($("anomalyVerifyOutcome").value || "IN CORSO").trim().toUpperCase();
-  $("btnCloseAnomaly").disabled = anomaly.status === "Chiusa" || !text || verifyOutcome !== "OK";
+  const hasExistingAction = Array.isArray(anomaly.actions) && anomaly.actions.length > 0;
+  const hasDraftAction = !!text || !!notes;
+  const hasExistingOk = anomalyHasPositiveVerification(anomaly);
+  const canClose = anomaly.status !== "Chiusa" && (verifyOutcome === "OK" || hasExistingOk) && (hasExistingAction || hasDraftAction);
+  $("btnCloseAnomaly").disabled = !canClose;
 }
 function refreshAnomalyModal() {
   const anomaly = getAnomalyById(currentAnomalyId);
@@ -1691,9 +1817,11 @@ function refreshAnomalyModal() {
 }
 function openAnomalyModal(id) {
   currentAnomalyId = id;
+  const anomaly = getAnomalyById(id);
+  const hasExistingOk = anomalyHasPositiveVerification(anomaly);
   $("anomalyActionText").value = "";
   $("anomalyActionNotes").value = "";
-  $("anomalyVerifyOutcome").value = "IN CORSO";
+  $("anomalyVerifyOutcome").value = hasExistingOk ? "OK" : "IN CORSO";
   $("anomalyOwner").value = currentUser?.name || "";
   $("anomalyMsg").textContent = "";
   applyVerifyOutcomeVisualState();
@@ -1707,35 +1835,56 @@ function closeAnomalyModal() {
 function saveAnomalyAction(shouldClose=false) {
   const anomaly = getAnomalyById(currentAnomalyId);
   if (!anomaly) return;
-  const text = String($("anomalyActionText").value || "").trim();
+  let text = String($("anomalyActionText").value || "").trim();
   const owner = String($("anomalyOwner").value || "").trim();
   const verifyOutcome = String($("anomalyVerifyOutcome").value || "IN CORSO").trim().toUpperCase();
   const notes = String($("anomalyActionNotes").value || "").trim();
-  if (!text) {
-    $("anomalyMsg").className = "msg err";
-    $("anomalyMsg").textContent = "Azione correttiva obbligatoria.";
-    return;
-  }
+  const hasExistingAction = Array.isArray(anomaly.actions) && anomaly.actions.length > 0;
+  const hasDraftAction = !!text || !!notes;
+
   if (!owner) {
     $("anomalyMsg").className = "msg err";
     $("anomalyMsg").textContent = "Responsabile obbligatorio.";
     return;
   }
-  if (shouldClose && verifyOutcome !== "OK") {
+  const hasExistingOk = anomalyHasPositiveVerification(anomaly);
+  if (shouldClose && verifyOutcome !== "OK" && !hasExistingOk) {
     $("anomalyMsg").className = "msg err";
-    $("anomalyMsg").textContent = "Per chiudere devi impostare 'Verifica dopo azione' su OK.";
+    $("anomalyMsg").textContent = "Per chiudere serve almeno una verifica OK, corrente o già registrata.";
     return;
   }
+  if (shouldClose && !(hasExistingAction || hasDraftAction)) {
+    $("anomalyMsg").className = "msg err";
+    $("anomalyMsg").textContent = "Per chiudere deve esistere almeno un'azione correttiva già salvata.";
+    return;
+  }
+
   anomaly.actions = Array.isArray(anomaly.actions) ? anomaly.actions : [];
-  anomaly.actions.push({
-    id: crypto.randomUUID(),
-    text,
-    owner,
-    verifyOutcome,
-    notes,
-    createdAt: dateTimeString(),
-    createdBy: currentUser?.name || ""
-  });
+
+  // In chiusura non obbligo a riscrivere l'azione se esiste già.
+  if (!shouldClose || hasDraftAction) {
+    if (!text) {
+      if (notes) {
+        text = "Aggiornamento note anomalia";
+      } else if (verifyOutcome === "OK") {
+        text = "Verifica azione positiva";
+      } else if (verifyOutcome === "KO") {
+        text = "Verifica azione negativa";
+      } else {
+        text = "Aggiornamento stato anomalia";
+      }
+    }
+    anomaly.actions.push({
+      id: crypto.randomUUID(),
+      text,
+      owner,
+      verifyOutcome,
+      notes,
+      createdAt: dateTimeString(),
+      createdBy: currentUser?.name || ""
+    });
+  }
+
   anomaly.takenInChargeAt = anomaly.takenInChargeAt || dateTimeString();
   anomaly.takenInChargeBy = anomaly.takenInChargeBy || owner;
   anomaly.status = shouldClose ? "Chiusa" : "In gestione";
@@ -1754,7 +1903,7 @@ function saveAnomalyAction(shouldClose=false) {
   renderKpis();
   $("anomalyActionText").value = "";
   $("anomalyActionNotes").value = "";
-  $("anomalyVerifyOutcome").value = "IN CORSO";
+  $("anomalyVerifyOutcome").value = shouldClose ? "OK" : "IN CORSO";
   refreshAnomalyModal();
   $("anomalyMsg").className = "msg ok";
   $("anomalyMsg").textContent = shouldClose ? "Anomalia chiusa." : "Aggiornamento salvato.";
@@ -1856,13 +2005,13 @@ async function confirmBadge(raw) {
   }
 
   const payload = parseQrPayload(raw || lastDecodedBadge || scannedOrTypedCode);
-  if (payload.roleHint === "QC") {
+  if (payload.roleHint === "QC" && !resolveMachineCandidate(scannedOrTypedCode)) {
     $("scanResult").textContent = "Badge non autorizzato: l'attestazione può essere fatta solo da una macchinista.";
     return;
   }
-  const found = findMachineByBadge(scannedOrTypedCode);
-  const foundQc = findQcUserByBadge(scannedOrTypedCode);
-  if (!found || (!payload.roleHint && found && foundQc)) {
+  const found = resolveMachineCandidate(scannedOrTypedCode || $("manualMachineBadgeNew").value || $("manualBadge").value);
+  const foundQc = resolveQcCandidate(scannedOrTypedCode || $("manualMachineBadgeNew").value || $("manualBadge").value);
+  if (!found || (!payload.roleHint && found && foundQc && normalizeBadgeValue(found.badge) === normalizeBadgeValue(foundQc.badge))) {
     $("scanResult").textContent = (!payload.roleHint && found && foundQc)
       ? "Badge presente sia in macchiniste sia in QC: per attestazione usa il QR macchinista."
       : "Badge non autorizzato: l'attestazione può essere fatta solo da macchiniste presenti in elenco.";
@@ -2143,6 +2292,7 @@ window.addEventListener("DOMContentLoaded", () => {
   try {
     loadStoredUsers();
     loadStorage();
+    sanitizeControlsAgainstRoleLists();
     populateMasterSelects();
     updateAutoType();
     syncLineFromWorkstation();
