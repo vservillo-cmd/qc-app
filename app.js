@@ -35,10 +35,177 @@ let masterData = {
 };
 let syncQueue = [];
 let syncMeta = { lastError: "", lastAttemptAt: null, lastSuccessAt: null };
+let currentCycle = null;
 let syncInFlight = false;
 const DEFAULT_SYNC_ENDPOINT = "";
+const DEFAULT_EXPORT_UPLOAD_ENDPOINT = "http://10.0.0.59:8000/upload";
 
 function $(id){ return document.getElementById(id); }
+
+function localIsoDate() {
+  const d = new Date();
+  const pad = (v) => String(v).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+}
+function formatCycleDate(isoDate) {
+  if (!isoDate) return "";
+  const [y,m,d] = String(isoDate).split("-");
+  return (d && m && y) ? `${d}/${m}/${y}` : isoDate;
+}
+function defaultCycle(dateValue) {
+  return {
+    date: dateValue || localIsoDate(),
+    state: "APERTO",
+    exportDone: false,
+    exportConfirmed: false,
+    lastExportAt: "",
+    closedAt: "",
+    exportedFiles: [],
+    closeoutRequired: false,
+    lastClosedSummary: null
+  };
+}
+function saveCycleState() {
+  if (currentCycle) {
+    localStorage.setItem("qc_cycle", JSON.stringify(currentCycle));
+  }
+}
+function loadCycleState() {
+  const today = localIsoDate();
+  try {
+    const raw = JSON.parse(localStorage.getItem("qc_cycle") || "null");
+    if (!raw || !raw.date) {
+      currentCycle = defaultCycle(today);
+      saveCycleState();
+      return;
+    }
+    currentCycle = { ...defaultCycle(raw.date), ...raw };
+    if (currentCycle.date < today && currentCycle.state !== "CHIUSO") {
+      currentCycle.closeoutRequired = true;
+    } else if (currentCycle.date < today && currentCycle.state === "CHIUSO") {
+      currentCycle = defaultCycle(today);
+    } else if (currentCycle.date === today && currentCycle.state !== "CHIUSO") {
+      currentCycle.closeoutRequired = false;
+    }
+    saveCycleState();
+  } catch (e) {
+    currentCycle = defaultCycle(today);
+    saveCycleState();
+  }
+}
+function cycleSummary() {
+  return {
+    controls: controls.length,
+    anomaliesTotal: anomalies.length,
+    anomaliesOpen: anomalies.filter(a => String(a.status||"").trim() === "Aperta").length,
+    anomaliesInProgress: anomalies.filter(a => String(a.status||"").trim() === "In gestione").length,
+    anomaliesClosed: anomalies.filter(a => String(a.status||"").trim() === "Chiusa").length,
+    pendingSync: syncQueue.length
+  };
+}
+function renderCycleStatus() {
+  const badge = $("badgeCycle");
+  const banner = $("cycleWarningBanner");
+  const summary = $("closeoutSummary");
+  const stateEl = $("closeoutState");
+  const msg = $("closeoutMsg");
+  const overlay = $("pendingCloseoutOverlay");
+  const overlayText = $("pendingCloseoutText");
+  if (badge) {
+    badge.className = "top-badge badge-neutral-soft";
+    const dateText = formatCycleDate(currentCycle?.date || "");
+    if (!currentCycle) {
+      badge.textContent = "Ciclo: n/d";
+    } else if (currentCycle.state === "CHIUSO") {
+      badge.textContent = `Ciclo chiuso ${dateText}`;
+      badge.classList.add("badge-success-soft");
+    } else if (currentCycle.closeoutRequired) {
+      badge.textContent = `Ciclo da chiudere ${dateText}`;
+      badge.classList.add("badge-danger-soft");
+    } else {
+      badge.textContent = `Ciclo aperto ${dateText}`;
+      badge.classList.add("badge-warning-soft");
+    }
+  }
+  if (banner) {
+    if (currentCycle && currentCycle.closeoutRequired) {
+      banner.classList.remove("hidden");
+      banner.textContent = `⚠ La giornata ${formatCycleDate(currentCycle.date)} non è stata chiusa. Devi esportare e chiudere prima di continuare.`;
+    } else {
+      banner.classList.add("hidden");
+      banner.textContent = "";
+    }
+  }
+  if (summary && currentCycle) {
+    const s = cycleSummary();
+    summary.innerHTML = `
+      <div class="closeout-kpi"><span>Data ciclo</span><strong>${formatCycleDate(currentCycle.date)}</strong></div>
+      <div class="closeout-kpi"><span>Controlli</span><strong>${s.controls}</strong></div>
+      <div class="closeout-kpi"><span>Anomalie aperte</span><strong>${s.anomaliesOpen}</strong></div>
+      <div class="closeout-kpi"><span>In gestione</span><strong>${s.anomaliesInProgress}</strong></div>
+      <div class="closeout-kpi"><span>Chiuse</span><strong>${s.anomaliesClosed}</strong></div>
+      <div class="closeout-kpi"><span>Sync in attesa</span><strong>${s.pendingSync}</strong></div>
+    `;
+  }
+  if (stateEl && currentCycle) {
+    stateEl.textContent = currentCycle.closeoutRequired ? "Stato: chiusura obbligatoria" : `Stato: ${currentCycle.state}`;
+  }
+  if (msg && currentCycle && currentCycle.lastExportAt) {
+    msg.className = "msg ok";
+    msg.textContent = `Ultimo export generato il ${currentCycle.lastExportAt}.`;
+  }
+  const requireCloseout = !!(currentCycle && currentCycle.closeoutRequired);
+  if (overlay && overlayText) {
+    overlay.classList.toggle("hidden", !requireCloseout);
+    overlayText.textContent = requireCloseout
+      ? `Giornata ${formatCycleDate(currentCycle.date)} non chiusa. Prima devi fare export e chiusura.`
+      : "";
+  }
+}
+function openCloseoutModal() {
+  renderCycleStatus();
+  const confirm = $("closeoutConfirm");
+  if (confirm) confirm.checked = false;
+  const btnFinal = $("btnConfirmCloseout");
+  if (btnFinal) btnFinal.disabled = true;
+  $("closeoutModal").classList.remove("hidden");
+}
+function closeCloseoutModal() {
+  $("closeoutModal").classList.add("hidden");
+}
+function buildFileBlob(content, type) {
+  if (content instanceof Blob) return content;
+  return new Blob([content], { type: type || "text/plain;charset=utf-8;" });
+}
+function triggerDownload(content, filename, type) {
+  const blob = buildFileBlob(content, type);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 500);
+}
+async function uploadExportFile(content, filename, type) {
+  const blob = buildFileBlob(content, type);
+  const endpoint = getExportUploadEndpoint();
+  if (!endpoint) {
+    triggerDownload(blob, filename, type);
+    return { ok: true, mode: "download" };
+  }
+  try {
+    const formData = new FormData();
+    formData.append("file", blob, filename);
+    const response = await fetch(endpoint, { method: "POST", body: formData });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    let payload = null;
+    try { payload = await response.json(); } catch (e) {}
+    return { ok: true, mode: "upload", payload };
+  } catch (err) {
+    console.error("Upload export fallito, fallback download locale", err);
+    triggerDownload(blob, filename, type);
+    return { ok: false, mode: "fallback_download", error: String(err?.message || err) };
+  }
+}
 
 function todayString() {
   return new Date().toLocaleDateString("it-IT");
@@ -69,6 +236,9 @@ function initFastChoices() {
 }
 function getSyncEndpoint() {
   return (localStorage.getItem("qc_sync_endpoint") || DEFAULT_SYNC_ENDPOINT || "").trim();
+}
+function getExportUploadEndpoint() {
+  return (localStorage.getItem("qc_export_upload_endpoint") || DEFAULT_EXPORT_UPLOAD_ENDPOINT || "").trim();
 }
 function saveStorage() {
   localStorage.setItem("qc_controls", JSON.stringify(controls));
@@ -1532,7 +1702,7 @@ function koCounters(control) {
   const materials = countKo(materialStatuses);
   return { measures, quality, materials, total: measures + quality + materials };
 }
-function exportCsv() {
+function buildControlsCsv() {
   const delimiter = ";";
   const header = [
     "Control_ID","DataOra_Locale","Data_ISO","Ora","Anno","Mese","Giorno","Ora_Num","Minuto_Num",
@@ -1545,63 +1715,20 @@ function exportCsv() {
     "Stato_Validazione","Validato_Flag","Operatrice_Qualita_Badge","Badge_Macchinista","Macchinista_Nome","DataOra_Attestazione","Attestato_Flag","Numero_Attestazioni",
     "Numero_Anomalie","Anomalia_Bordo","Anomalia_Passo","Anomalia_Tacche","Anomalia_Fermapunto","Anomalia_Punti_Saltati","Anomalia_Ago_Spuntato","Anomalia_Filato_Ago","Anomalia_Filato_Crochet","Anomalia_Ago","Anomalia_Note"
   ];
-
   const rows = controls.map(c => {
     const parts = toIsoDateParts(c.createdAt);
     const anomaliesForControl = anomalies.filter(a => a.controlId === c.id);
     const anomalyTypes = new Set(anomaliesForControl.map(a => String(a.type || "").trim()));
     const ko = koCounters(c);
     return [
-      c.id || "",
-      c.createdAt || "",
-      parts.date,
-      parts.time,
-      parts.year,
-      parts.month,
-      parts.day,
-      parts.hour,
-      parts.minute,
-      c.qualityUser || "",
-      c.shift || "",
-      c.workstation || "",
-      c.stitchType || "",
-      c.linea || "",
-      c.particular || "",
-      c.setupCode || "",
-      c.lot || "",
-      c.measureBorder || "",
-      c.measureBorderStatus || "",
-      c.measurePitch || "",
-      c.measurePitchStatus || "",
-      c.measureNotch || "",
-      c.measureNotchStatus || "",
-      c.qualityStop || "",
-      c.qualitySkipped || "",
-      c.qualityNeedle || "",
-      c.threadNeedle || "",
-      c.threadNeedleStatus || "",
-      c.threadCrochet || "",
-      c.threadCrochetStatus || "",
-      c.needleType || "",
-      c.needleTypeStatus || "",
-      c.needleChange || "",
-      c.notes || "",
-      notesStatusForCsv(c.notes),
-      c.outcome || "",
-      c.outcome === "KO" ? 1 : 0,
-      c.outcome === "OK" ? 1 : 0,
-      ko.measures,
-      ko.quality,
-      ko.materials,
-      ko.total,
-      c.status || "",
-      c.status === "Validato" ? 1 : 0,
-      badgeForCsv(c.qualityBadge),
-      badgeForCsv(c.machineBadge),
-      c.machineOperator || "",
-      c.machineAttestedAt || "",
-      c.machineBadge ? 1 : 0,
-      c.attestationCount || 0,
+      c.id || "", c.createdAt || "", parts.date, parts.time, parts.year, parts.month, parts.day, parts.hour, parts.minute,
+      c.qualityUser || "", c.shift || "", c.workstation || "", c.stitchType || "", c.linea || "", c.particular || "", c.setupCode || "", c.lot || "",
+      c.measureBorder || "", c.measureBorderStatus || "", c.measurePitch || "", c.measurePitchStatus || "", c.measureNotch || "", c.measureNotchStatus || "",
+      c.qualityStop || "", c.qualitySkipped || "", c.qualityNeedle || "",
+      c.threadNeedle || "", c.threadNeedleStatus || "", c.threadCrochet || "", c.threadCrochetStatus || "", c.needleType || "", c.needleTypeStatus || "", c.needleChange || "",
+      c.notes || "", notesStatusForCsv(c.notes), c.outcome || "", c.outcome === "KO" ? 1 : 0, c.outcome === "OK" ? 1 : 0,
+      ko.measures, ko.quality, ko.materials, ko.total,
+      c.status || "", c.status === "Validato" ? 1 : 0, badgeForCsv(c.qualityBadge), badgeForCsv(c.machineBadge), c.machineOperator || "", c.machineAttestedAt || "", c.machineBadge ? 1 : 0, c.attestationCount || 0,
       anomaliesForControl.length,
       anomalyTypes.has("Bordo cucitura KO") ? 1 : 0,
       anomalyTypes.has("Passo punto KO") ? 1 : 0,
@@ -1615,117 +1742,446 @@ function exportCsv() {
       anomalyTypes.has("Note KO") ? 1 : 0
     ].map(csvValue).join(delimiter);
   });
-
-  const csv = "\ufeff" + [header.join(delimiter), ...rows].join("\n");
-  const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `qc_controlli_kpi_${new Date().toISOString().slice(0,10)}.csv`;
-  a.click();
+  return "\ufeff" + [header.join(delimiter), ...rows].join("\n");
 }
-
-function exportKpi() {
+async function exportCsv() {
+  const filename = `qc_controlli_${currentCycle?.date || new Date().toISOString().slice(0,10)}.csv`;
+  const result = await uploadExportFile(buildControlsCsv(), filename, "text/csv;charset=utf-8;");
+  const msg = result.mode === "upload"
+    ? `File inviato al server: ${filename}`
+    : result.mode === "fallback_download"
+      ? `Server non raggiungibile. File scaricato in locale: ${filename}`
+      : `File scaricato in locale: ${filename}`;
+  alert(msg);
+}
+function buildKpiCsv() {
   const delimiter = ";";
   const header = [
     "Data","Ora","Turno","Linea","Postazione","Macchina","Risorsa_Qualita","Badge_Qualita","Badge_Macchinista","Macchinista",
     "Codice_Prodotto","Particolare","Lotto","Esito_Complessivo","Stato_Controllo",
     "Categoria_KO","Tipo_KO","Dettaglio_KO","Valore_Rilevato","Valore_Atteso","Severita","Anomalia_Stato"
   ];
-
   const koDetailsForControl = (c) => {
     const linea = c.linea || "";
     const tol = masterData.tolleranze?.[linea];
     const material = masterData.materiali?.[linea] || {threadNeedle: [], threadCrochet: [], needleType: []};
     const details = [];
     const add = (categoria, tipo, dettaglio, valore, atteso, severita) => details.push({categoria, tipo, dettaglio, valore, atteso, severita});
-
     if (c.measureBorderStatus === "KO") add("MISURE", "BORDO_CUCITURA", "Bordo cucitura fuori tolleranza", c.measureBorder || "", tol ? `${tol.bordoMin} ÷ ${tol.bordoMax}` : "", "Grave");
     if (c.measurePitchStatus === "KO") add("MISURE", "PASSO_PUNTO", "Passo punto fuori tolleranza", c.measurePitch || "", tol ? `${tol.passoMin} ÷ ${tol.passoMax}` : "", "Grave");
     if (c.measureNotchStatus === "KO") add("MISURE", "DISALLINEAMENTO_TACCHE", "Disallineamento tacche fuori tolleranza", c.measureNotch || "", tol ? `${tol.taccheMin} ÷ ${tol.taccheMax}` : "", "Grave");
-
     if (c.qualityStop === "KO") add("QUALITATIVI", "FERMAPUNTO", "Fermapunto non conforme", c.qualityStop || "", "OK", "Media");
     if (c.qualitySkipped === "KO") add("QUALITATIVI", "PUNTI_SALTATI", "Punti saltati rilevati", c.qualitySkipped || "", "OK", "Media");
     if (c.qualityNeedle === "KO") add("QUALITATIVI", "AGO_SPUNTATO", "Ago spuntato rilevato", c.qualityNeedle || "", "OK", "Media");
-
     if (c.threadNeedleStatus === "KO") add("MATERIALI", "FILATO_AGO", "Codice filato ago non conforme", c.threadNeedle || "", material.threadNeedle?.join("/") || "", "Media");
     if (c.threadCrochetStatus === "KO") add("MATERIALI", "FILATO_CROCHET", "Codice filato crochet non conforme", c.threadCrochet || "", material.threadCrochet?.join("/") || "", "Media");
     if (c.needleTypeStatus === "KO") add("MATERIALI", "AGO", "Ago non conforme", c.needleType || "", material.needleType?.join("/") || "", "Media");
-
     return details;
   };
-
   const rows = [];
   controls.forEach(c => {
     const parts = toIsoDateParts(c.createdAt);
     const anomaliesForControl = anomalies.filter(a => a.controlId === c.id);
     const detailRows = koDetailsForControl(c);
-
     if (!detailRows.length) {
       rows.push([
-        parts.date,
-        parts.time,
-        c.shift || "",
-        c.linea || "",
-        c.workstation || "",
-        c.workstation || "",
-        c.qualityUser || "",
-        badgeForCsv(c.qualityBadge),
-        badgeForCsv(c.machineBadge),
-        c.machineOperator || "",
-        c.setupCode || "",
-        c.particular || "",
-        c.lot || "",
-        c.outcome || "",
-        c.status || "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        ""
+        parts.date, parts.time, c.shift || "", c.linea || "", c.workstation || "", c.workstation || "", c.qualityUser || "", badgeForCsv(c.qualityBadge), badgeForCsv(c.machineBadge), c.machineOperator || "", c.setupCode || "", c.particular || "", c.lot || "", c.outcome || "", c.status || "", "", "", "", "", "", "", ""
       ].map(csvValue).join(delimiter));
       return;
     }
-
     detailRows.forEach(d => {
       rows.push([
-        parts.date,
-        parts.time,
-        c.shift || "",
-        c.linea || "",
-        c.workstation || "",
-        c.workstation || "",
-        c.qualityUser || "",
-        badgeForCsv(c.qualityBadge),
-        badgeForCsv(c.machineBadge),
-        c.machineOperator || "",
-        c.setupCode || "",
-        c.particular || "",
-        c.lot || "",
-        c.outcome || "",
-        c.status || "",
-        d.categoria,
-        d.tipo,
-        d.dettaglio,
-        d.valore,
-        d.atteso,
-        d.severita,
-        anomaliesForControl.length ? anomaliesForControl[0].status || "Aperta" : (c.outcome === "KO" ? "Aperta" : "")
+        parts.date, parts.time, c.shift || "", c.linea || "", c.workstation || "", c.workstation || "", c.qualityUser || "", badgeForCsv(c.qualityBadge), badgeForCsv(c.machineBadge), c.machineOperator || "", c.setupCode || "", c.particular || "", c.lot || "", c.outcome || "", c.status || "", d.categoria, d.tipo, d.dettaglio, d.valore, d.atteso, d.severita,
+        anomaliesForControl.find(a => String(a.type||"").includes(d.dettaglio.split(" ")[0]))?.status || (anomaliesForControl[0]?.status || "")
       ].map(csvValue).join(delimiter));
     });
   });
-
-  const csv = "﻿" + [header.join(delimiter), ...rows].join("\n");
-  const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `qc_kpi_${new Date().toISOString().slice(0,10)}.csv`;
-  a.click();
+  return "\ufeff" + [header.join(delimiter), ...rows].join("\n");
 }
-
+function buildBackupJson() {
+  return JSON.stringify({
+    exportedAt: new Date().toISOString(),
+    cycle: currentCycle,
+    user: currentUser,
+    controls,
+    anomalies,
+    gammaOrders,
+    syncQueue,
+    syncMeta
+  }, null, 2);
+}
+async function exportKpi() {
+  const filename = `qc_kpi_${currentCycle?.date || new Date().toISOString().slice(0,10)}.csv`;
+  const result = await uploadExportFile(buildKpiCsv(), filename, "text/csv;charset=utf-8;");
+  const msg = result.mode === "upload"
+    ? `File inviato al server: ${filename}`
+    : result.mode === "fallback_download"
+      ? `Server non raggiungibile. File scaricato in locale: ${filename}`
+      : `File scaricato in locale: ${filename}`;
+  alert(msg);
+}
+async function generateCloseoutExports() {
+  if (!currentCycle) loadCycleState();
+  const suffix = currentCycle?.date || localIsoDate();
+  const files = [
+    { name: `qc_controlli_${suffix}.csv`, content: buildControlsCsv(), type: "text/csv;charset=utf-8;" },
+    { name: `qc_kpi_${suffix}.csv`, content: buildKpiCsv(), type: "text/csv;charset=utf-8;" },
+    { name: `qc_backup_${suffix}.json`, content: buildBackupJson(), type: "application/json;charset=utf-8;" }
+  ];
+  const results = [];
+  for (const file of files) {
+    results.push(await uploadExportFile(file.content, file.name, file.type));
+  }
+  currentCycle.exportDone = true;
+  currentCycle.lastExportAt = dateTimeString();
+  currentCycle.exportedFiles = files.map(x => x.name);
+  saveCycleState();
+  const msg = $("closeoutMsg");
+  if (msg) {
+    msg.className = results.every(r => r.mode === "upload") ? "msg ok" : "msg warn";
+    msg.textContent = results.every(r => r.mode === "upload")
+      ? "Export inviato al server. Ora conferma l'archiviazione e chiudi la giornata."
+      : "Server non raggiungibile per tutti i file. È stato eseguito il fallback locale dove necessario. Ora conferma l'archiviazione e chiudi la giornata.";
+  }
+  renderCycleStatus();
+}
+function updateCloseoutConfirmState() {
+  const enabled = !!($("closeoutConfirm")?.checked && currentCycle?.exportDone);
+  if ($("btnConfirmCloseout")) $("btnConfirmCloseout").disabled = !enabled;
+}
+function confirmCloseout() {
+  if (!currentCycle?.exportDone) {
+    const msg = $("closeoutMsg");
+    if (msg) { msg.className = "msg err"; msg.textContent = "Prima devi generare l'export."; }
+    return;
+  }
+  if (!$("closeoutConfirm")?.checked) {
+    const msg = $("closeoutMsg");
+    if (msg) { msg.className = "msg err"; msg.textContent = "Devi confermare l'archiviazione dei file."; }
+    return;
+  }
+  currentCycle.exportConfirmed = true;
+  currentCycle.closedAt = dateTimeString();
+  currentCycle.state = "CHIUSO";
+  currentCycle.closeoutRequired = false;
+  currentCycle.lastClosedSummary = cycleSummary();
+  controls = [];
+  anomalies = [];
+  syncQueue = [];
+  syncMeta = { lastError: "", lastAttemptAt: null, lastSuccessAt: null };
+  saveStorage();
+  saveCycleState();
+  renderHistory();
+  renderAnomalies();
+  renderTraceability();
+  renderKpis();
+  renderSyncStatus();
+  renderCycleStatus();
+  closeCloseoutModal();
+  alert("Giornata chiusa correttamente. Dati operativi resettati.");
+}
 function printApp() {
-  window.print();
+  const total = controls.length;
+  const ko = controls.filter(c => String(c.outcome || '').trim().toUpperCase() === 'KO').length;
+  const ok = controls.filter(c => String(c.outcome || '').trim().toUpperCase() === 'OK').length;
+  const koRate = total ? (((ko / total) * 100).toFixed(1)).replace('.', ',') + '%' : '0%';
+  const open = anomalies.filter(a => getDerivedAnomalyStatus(a) === 'Aperta').length;
+  const inProgress = anomalies.filter(a => getDerivedAnomalyStatus(a) === 'In gestione').length;
+  const closed = anomalies.filter(a => getDerivedAnomalyStatus(a) === 'Chiusa').length;
+
+  const frequency = (arr, field) => {
+    const map = new Map();
+    arr.forEach(item => {
+      const key = String(item?.[field] || '').trim();
+      if (!key) return;
+      map.set(key, (map.get(key) || 0) + 1);
+    });
+    let best = '';
+    let bestCount = 0;
+    map.forEach((count, key) => {
+      if (count > bestCount) {
+        best = key;
+        bestCount = count;
+      }
+    });
+    return best;
+  };
+
+  const shift = frequency(controls, 'shift') || '-';
+  const line = frequency(controls, 'linea') || '-';
+  const operatorName = currentUser?.name || controls[controls.length - 1]?.qualityUser || '-';
+  const operatorBadge = currentUser?.badge || controls[controls.length - 1]?.qualityBadge || '-';
+  const cycleDate = formatCycleDate(currentCycle?.date || localIsoDate());
+  const printedAt = dateTimeString();
+
+  const anomalyRows = anomalies.length
+    ? anomalies.slice().reverse().map(a => {
+        const status = getDerivedAnomalyStatus(a);
+        return `
+          <tr>
+            <td>${a.openedAt || '-'}</td>
+            <td>${a.lot || '-'}</td>
+            <td>${a.type || '-'}</td>
+            <td>${a.severity || '-'}</td>
+            <td>${status}</td>
+          </tr>`;
+      }).join('')
+    : '<tr><td colspan="5">Nessuna anomalia registrata.</td></tr>';
+
+  const html = `<!DOCTYPE html>
+  <html lang="it">
+  <head>
+    <meta charset="UTF-8">
+    <title>Report KPI QC</title>
+    <style>
+      @page { size: A4 portrait; margin: 12mm; }
+      * { box-sizing: border-box; }
+      body {
+        font-family: Arial, Helvetica, sans-serif;
+        color: #111827;
+        margin: 0;
+        background: #ffffff;
+      }
+      .sheet {
+        width: 100%;
+      }
+      .doc-header {
+        border: 2px solid #0f172a;
+        display: grid;
+        grid-template-columns: 180px 1fr 210px;
+        min-height: 90px;
+      }
+      .doc-cell {
+        padding: 10px 12px;
+        border-right: 1px solid #0f172a;
+      }
+      .doc-cell:last-child { border-right: none; }
+      .brand {
+        font-size: 18px;
+        font-weight: 700;
+        line-height: 1.2;
+      }
+      .subtitle {
+        font-size: 11px;
+        margin-top: 4px;
+        color: #374151;
+      }
+      .doc-title {
+        text-align: center;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+      }
+      .doc-title h1 {
+        margin: 0;
+        font-size: 20px;
+        letter-spacing: .4px;
+      }
+      .doc-title p {
+        margin: 6px 0 0;
+        font-size: 11px;
+        color: #374151;
+      }
+      .doc-meta {
+        font-size: 11px;
+      }
+      .doc-meta table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      .doc-meta td {
+        padding: 3px 0;
+        vertical-align: top;
+      }
+      .doc-meta td:first-child {
+        font-weight: 700;
+        width: 88px;
+      }
+      .section {
+        margin-top: 12px;
+        border: 1.5px solid #0f172a;
+      }
+      .section-title {
+        background: #e5e7eb;
+        border-bottom: 1px solid #0f172a;
+        padding: 7px 10px;
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: .3px;
+      }
+      .section-body {
+        padding: 10px;
+      }
+      .info-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+      }
+      .info-box {
+        border: 1px solid #cbd5e1;
+        padding: 8px 9px;
+        min-height: 54px;
+      }
+      .info-box .label {
+        font-size: 10px;
+        text-transform: uppercase;
+        color: #475569;
+        margin-bottom: 5px;
+      }
+      .info-box .value {
+        font-size: 16px;
+        font-weight: 700;
+      }
+      .info-box .value.small {
+        font-size: 13px;
+      }
+      .kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 8px;
+      }
+      .kpi-box {
+        border: 1.5px solid #0f172a;
+        min-height: 78px;
+        padding: 8px;
+        text-align: center;
+      }
+      .kpi-box .label {
+        font-size: 10px;
+        text-transform: uppercase;
+        color: #334155;
+        margin-bottom: 8px;
+      }
+      .kpi-box .value {
+        font-size: 26px;
+        font-weight: 700;
+      }
+      .kpi-box .value.rate {
+        font-size: 22px;
+      }
+      table.report {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 11px;
+      }
+      table.report th,
+      table.report td {
+        border: 1px solid #0f172a;
+        padding: 6px 7px;
+        text-align: left;
+        vertical-align: top;
+      }
+      table.report th {
+        background: #e5e7eb;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: .25px;
+      }
+      .signatures {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+        margin-top: 22px;
+      }
+      .sign-box {
+        border-top: 1px solid #0f172a;
+        padding-top: 6px;
+        font-size: 11px;
+        min-height: 46px;
+      }
+      .footer-note {
+        margin-top: 10px;
+        font-size: 10px;
+        color: #475569;
+        text-align: right;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="sheet">
+      <div class="doc-header">
+        <div class="doc-cell">
+          <div class="brand">LSM s.r.l.</div>
+          <div class="subtitle">Quality Control</div>
+        </div>
+        <div class="doc-cell doc-title">
+          <h1>REPORT CONTROLLO QUALITÀ PROCESSO</h1>
+          <p>Consuntivo operativo aggiornato alla stampa</p>
+        </div>
+        <div class="doc-cell doc-meta">
+          <table>
+            <tr><td>Data ciclo</td><td>${cycleDate}</td></tr>
+            <tr><td>Stampato il</td><td>${printedAt}</td></tr>
+            <tr><td>Rev.</td><td>00</td></tr>
+            <tr><td>Pag.</td><td>1 / 1</td></tr>
+          </table>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Riferimenti operativi</div>
+        <div class="section-body info-grid">
+          <div class="info-box"><div class="label">Operatore QC</div><div class="value small">${operatorName}</div></div>
+          <div class="info-box"><div class="label">Badge</div><div class="value small">${operatorBadge || '-'}</div></div>
+          <div class="info-box"><div class="label">Turno prevalente</div><div class="value small">${shift}</div></div>
+          <div class="info-box"><div class="label">Linea prevalente</div><div class="value small">${line}</div></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">KPI consuntivati</div>
+        <div class="section-body kpi-grid">
+          <div class="kpi-box"><div class="label">Controlli totali</div><div class="value">${total}</div></div>
+          <div class="kpi-box"><div class="label">Controlli OK</div><div class="value">${ok}</div></div>
+          <div class="kpi-box"><div class="label">Controlli KO</div><div class="value">${ko}</div></div>
+          <div class="kpi-box"><div class="label">% KO</div><div class="value rate">${koRate}</div></div>
+          <div class="kpi-box"><div class="label">Anomalie aperte</div><div class="value">${open}</div></div>
+          <div class="kpi-box"><div class="label">In gestione / chiuse</div><div class="value">${inProgress} / ${closed}</div></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Sintesi anomalie</div>
+        <div class="section-body">
+          <table class="report">
+            <thead>
+              <tr>
+                <th>Aperta il</th>
+                <th>Lotto</th>
+                <th>Tipo difetto</th>
+                <th>Severità</th>
+                <th>Stato</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${anomalyRows}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="signatures">
+        <div class="sign-box">Firma Operatore QC</div>
+        <div class="sign-box">Firma Caposquadra</div>
+      </div>
+      <div class="footer-note">Documento generato automaticamente dal sistema VS Q-Process.</div>
+    </div>
+  </body>
+  </html>`;
+
+  const printWindow = window.open('', '_blank', 'width=980,height=800');
+  if (!printWindow) {
+    alert('Impossibile aprire la finestra di stampa. Controlla il blocco popup del browser.');
+    return;
+  }
+  printWindow.document.open();
+  printWindow.document.write(html);
+  printWindow.document.close();
+  printWindow.focus();
+  setTimeout(() => {
+    printWindow.print();
+  }, 250);
 }
 function backupJson() {
   const blob = new Blob([JSON.stringify({controls, anomalies, masterData}, null, 2)], {type:"application/json"});
@@ -1747,7 +2203,7 @@ function renderAnomalyActionsHistory(anomaly) {
     return;
   }
   box.innerHTML = actions.slice().reverse().map(a => `
-    <div class="detail-row"><div class="detail-key">${a.createdAt}</div><div><strong>${a.owner || '-'} </strong><br>${a.text || '-'}${a.verifyOutcome ? `<br>Verifica dopo azione: <span class="badge ${a.verifyOutcome === "OK" ? "badge-ok" : (a.verifyOutcome === "KO" ? "badge-ko" : "badge-state")}">${a.verifyOutcome}</span>` : ''}${a.notes ? `<br>Note: ${a.notes}` : ''}</div></div>
+    <div class="detail-row"><div class="detail-key">${a.createdAt}</div><div><strong>${a.owner || '-'} </strong><br>${a.text || '-'}${a.verifyOutcome ? `<br>Verifica dopo azione: <span class="badge ${a.verifyOutcome === "OK" ? "badge-ok" : (a.verifyOutcome === "KO" ? "badge-ko" : "badge-state")}">${a.verifyOutcome}</span>` : ''}</div></div>
   `).join('');
 }
 function applyVerifyOutcomeVisualState() {
@@ -1776,12 +2232,11 @@ function refreshAnomalyCloseButton() {
   const anomaly = getAnomalyById(currentAnomalyId);
   if (!anomaly) return;
   const text = String($("anomalyActionText").value || "").trim();
-  const notes = String($("anomalyActionNotes").value || "").trim();
   const verifyOutcome = String($("anomalyVerifyOutcome").value || "IN CORSO").trim().toUpperCase();
   const hasExistingAction = Array.isArray(anomaly.actions) && anomaly.actions.length > 0;
-  const hasDraftAction = !!text || !!notes;
+  const hasDraftAction = !!text;
   const hasExistingOk = anomalyHasPositiveVerification(anomaly);
-  const canClose = anomaly.status !== "Chiusa" && (verifyOutcome === "OK" || hasExistingOk) && (hasExistingAction || hasDraftAction);
+  const canClose = anomaly.status !== "Chiusa" && (hasExistingOk || ((hasExistingAction || hasDraftAction) && verifyOutcome === "OK"));
   $("btnCloseAnomaly").disabled = !canClose;
 }
 function refreshAnomalyModal() {
@@ -1820,7 +2275,6 @@ function openAnomalyModal(id) {
   const anomaly = getAnomalyById(id);
   const hasExistingOk = anomalyHasPositiveVerification(anomaly);
   $("anomalyActionText").value = "";
-  $("anomalyActionNotes").value = "";
   $("anomalyVerifyOutcome").value = hasExistingOk ? "OK" : "IN CORSO";
   $("anomalyOwner").value = currentUser?.name || "";
   $("anomalyMsg").textContent = "";
@@ -1838,19 +2292,13 @@ function saveAnomalyAction(shouldClose=false) {
   let text = String($("anomalyActionText").value || "").trim();
   const owner = String($("anomalyOwner").value || "").trim();
   const verifyOutcome = String($("anomalyVerifyOutcome").value || "IN CORSO").trim().toUpperCase();
-  const notes = String($("anomalyActionNotes").value || "").trim();
   const hasExistingAction = Array.isArray(anomaly.actions) && anomaly.actions.length > 0;
-  const hasDraftAction = !!text || !!notes;
+  const hasDraftAction = !!text;
+  const hasExistingOk = anomalyHasPositiveVerification(anomaly);
 
   if (!owner) {
     $("anomalyMsg").className = "msg err";
     $("anomalyMsg").textContent = "Responsabile obbligatorio.";
-    return;
-  }
-  const hasExistingOk = anomalyHasPositiveVerification(anomaly);
-  if (shouldClose && verifyOutcome !== "OK" && !hasExistingOk) {
-    $("anomalyMsg").className = "msg err";
-    $("anomalyMsg").textContent = "Per chiudere serve almeno una verifica OK, corrente o già registrata.";
     return;
   }
   if (shouldClose && !(hasExistingAction || hasDraftAction)) {
@@ -1858,28 +2306,29 @@ function saveAnomalyAction(shouldClose=false) {
     $("anomalyMsg").textContent = "Per chiudere deve esistere almeno un'azione correttiva già salvata.";
     return;
   }
+  if (shouldClose && verifyOutcome !== "OK" && !hasExistingOk) {
+    $("anomalyMsg").className = "msg err";
+    $("anomalyMsg").textContent = "Per chiudere l'anomalia serve una verifica finale OK.";
+    return;
+  }
 
   anomaly.actions = Array.isArray(anomaly.actions) ? anomaly.actions : [];
 
+  if (!shouldClose && !hasDraftAction && !(hasExistingAction && verifyOutcome !== "IN CORSO")) {
+    $("anomalyMsg").className = "msg err";
+    $("anomalyMsg").textContent = "Inserisci un'azione correttiva prima di salvare oppure registra un esito verifica su un'azione già esistente.";
+    return;
+  }
+
   // In chiusura non obbligo a riscrivere l'azione se esiste già.
-  if (!shouldClose || hasDraftAction) {
-    if (!text) {
-      if (notes) {
-        text = "Aggiornamento note anomalia";
-      } else if (verifyOutcome === "OK") {
-        text = "Verifica azione positiva";
-      } else if (verifyOutcome === "KO") {
-        text = "Verifica azione negativa";
-      } else {
-        text = "Aggiornamento stato anomalia";
-      }
-    }
+  // Anche in salvataggio semplice consento di registrare solo l'esito finale
+  // se un'azione correttiva esiste già.
+  if (!shouldClose || hasDraftAction || (hasExistingAction && verifyOutcome !== "IN CORSO")) {
     anomaly.actions.push({
       id: crypto.randomUUID(),
-      text,
+      text: hasDraftAction ? text : "Verifica esito finale registrata",
       owner,
       verifyOutcome,
-      notes,
       createdAt: dateTimeString(),
       createdBy: currentUser?.name || ""
     });
@@ -1902,11 +2351,10 @@ function saveAnomalyAction(shouldClose=false) {
   renderTraceability();
   renderKpis();
   $("anomalyActionText").value = "";
-  $("anomalyActionNotes").value = "";
   $("anomalyVerifyOutcome").value = shouldClose ? "OK" : "IN CORSO";
   refreshAnomalyModal();
   $("anomalyMsg").className = "msg ok";
-  $("anomalyMsg").textContent = shouldClose ? "Anomalia chiusa." : "Aggiornamento salvato.";
+  $("anomalyMsg").textContent = shouldClose ? "Anomalia chiusa." : "Azione salvata.";
 }
 function closeAnomalyRecord() {
   saveAnomalyAction(true);
@@ -2245,6 +2693,8 @@ window.closeAnomalyModal = closeAnomalyModal;
 window.openAttestModal = openAttestModal;
 window.closeAttestModal = closeAttestModal;
 window.closeLoginQrModal = closeLoginQrModal;
+window.closeCloseoutModal = closeCloseoutModal;
+window.openCloseoutModal = openCloseoutModal;
 
 window.addEventListener("DOMContentLoaded", () => {
   // Bind critical actions first
@@ -2261,6 +2711,11 @@ window.addEventListener("DOMContentLoaded", () => {
   $("anomalyActionText").addEventListener("input", refreshAnomalyCloseButton);
   $("btnExportCsv").addEventListener("click", exportCsv);
   $("btnExportKpi").addEventListener("click", exportKpi);
+  if ($("btnOpenCloseout")) $("btnOpenCloseout").addEventListener("click", openCloseoutModal);
+  if ($("btnOverlayCloseout")) $("btnOverlayCloseout").addEventListener("click", openCloseoutModal);
+  if ($("btnGenerateCloseout")) $("btnGenerateCloseout").addEventListener("click", generateCloseoutExports);
+  if ($("closeoutConfirm")) $("closeoutConfirm").addEventListener("change", updateCloseoutConfirmState);
+  if ($("btnConfirmCloseout")) $("btnConfirmCloseout").addEventListener("click", confirmCloseout);
   $("btnPrint").addEventListener("click", printApp);
   $("btnImportGamma").addEventListener("click", () => $("importGammaFile").click());
   $("importGammaFile").addEventListener("change", (e) => importGammaFile(e.target.files[0]));
@@ -2292,6 +2747,7 @@ window.addEventListener("DOMContentLoaded", () => {
   try {
     loadStoredUsers();
     loadStorage();
+    loadCycleState();
     sanitizeControlsAgainstRoleLists();
     populateMasterSelects();
     updateAutoType();
@@ -2303,6 +2759,7 @@ window.addEventListener("DOMContentLoaded", () => {
     renderTraceability();
     renderKpis();
     renderSyncStatus();
+    renderCycleStatus();
     scheduleSync();
     updateDataSourceStatus();
     updateLoginScreenState();

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>QC Tablet Pilot</title>
+  <title>VS Q-Process</title>
   <link rel="stylesheet" href="style.css" />
   <script src="https://unpkg.com/html5-qrcode" defer></script>
   <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js" defer></script>
@@ -12,8 +12,8 @@
 <body>
   <div id="loginView" class="center-wrap">
     <div class="card login-card">
-      <h1>CONTROLLI IN PROCESSO</h1>
-      <p class="muted">Accesso operatrici controllo qualità</p>
+      <h1>VS Q-Process</h1>
+      <p class="muted">Quality Control</p>
 
       <div id="bootstrapBox" class="bootstrap-box hidden">
         <h3>Configurazione iniziale</h3>
@@ -64,8 +64,8 @@
   <div id="appView" class="hidden">
     <header class="topbar header-stack">
       <div class="title-row">
-        <h1>CONTROLLI IN PROCESSO</h1>
-        <div class="subline"><span id="loggedUser"></span> · <span id="todayDate"></span></div>
+        <h1>VS Q-Process</h1>
+        <div class="subline">Quality Control · <span id="loggedUser"></span> · <span id="todayDate"></span></div>
       </div>
 
       <div class="status-badges-row">
@@ -74,6 +74,7 @@
         <span id="badgeEndpoint" class="top-badge">Endpoint: OFF</span>
         <span id="badgeGamma" class="top-badge badge-neutral-soft">Gamma: NO</span>
         <span id="badgeQc" class="top-badge badge-neutral-soft">QC: NO</span>
+        <span id="badgeCycle" class="top-badge badge-neutral-soft">Ciclo: n/d</span>
         <button id="btnRetrySync" class="secondary sync-retry hidden" type="button">Riprova sync</button>
       </div>
 
@@ -87,6 +88,7 @@
         <div class="actions-group actions-group-right">
           <button id="btnExportCsv" class="secondary">Esporta dati</button>
           <button id="btnExportKpi" class="secondary">Esporta KPI</button>
+          <button id="btnOpenCloseout" class="warning">Chiusura giornata</button>
           <button id="btnPrint" class="secondary">Stampa</button>
           <button id="btnLogout" class="danger">Esci</button>
         </div>
@@ -94,6 +96,14 @@
     </header>
 
     <main class="container">
+      <div id="cycleWarningBanner" class="warning-banner hidden"></div>
+      <div id="pendingCloseoutOverlay" class="closeout-overlay hidden">
+        <div class="closeout-overlay-card">
+          <h3>Chiusura giornata obbligatoria</h3>
+          <p id="pendingCloseoutText"></p>
+          <button id="btnOverlayCloseout" class="warning" type="button">Apri chiusura giornata</button>
+        </div>
+      </div>
       <section class="card form-card">
         <h2>Nuovo controllo</h2>
         <div class="section-marker">Contesto produzione</div>
@@ -442,9 +452,7 @@
           </div>
         </div>
         <label>Azione correttiva</label>
-        <textarea id="anomalyActionText" rows="3" placeholder="Descrivere l'azione eseguita (facoltativo se aggiorni solo note o stato)"></textarea>
-        <label>Note</label>
-        <textarea id="anomalyActionNotes" rows="2" placeholder="Note aggiuntive"></textarea>
+        <textarea id="anomalyActionText" rows="3" placeholder="Descrivere l'azione correttiva eseguita"></textarea>
       </div>
       <div class="detail-section full">
         <h4>Storico azioni</h4>
@@ -461,7 +469,7 @@
             </select>
           </div>
           <div class="actions-row compact-actions">
-            <button id="btnSaveAnomalyAction" class="primary" type="button">Salva avanzamento</button>
+            <button id="btnSaveAnomalyAction" class="primary" type="button">Salva azione</button>
             <button id="btnCloseAnomaly" class="success" type="button">Chiudi anomalia</button>
           </div>
         </div>
@@ -470,5 +478,26 @@
     </div>
   </div>
 
+  <div id="closeoutModal" class="modal hidden">
+    <div class="modal-card wide">
+      <div class="modal-header">
+        <h3>Chiusura giornata / turno</h3>
+        <button class="secondary" onclick="closeCloseoutModal()">Chiudi</button>
+      </div>
+      <p class="muted">Prima genera export, poi conferma il download e infine chiudi la giornata. Solo alla fine lo storico operativo viene svuotato.</p>
+      <div id="closeoutState" class="msg">Stato: APERTO</div>
+      <div id="closeoutSummary" class="closeout-summary"></div>
+      <div class="actions-row">
+        <button id="btnGenerateCloseout" class="primary" type="button">Genera export completo</button>
+      </div>
+      <div class="manual-box">
+        <label class="closeout-confirm-row"><input id="closeoutConfirm" type="checkbox" /><span>Confermo l'archiviazione dei file export.</span></label>
+      </div>
+      <div class="actions-row">
+        <button id="btnConfirmCloseout" class="success" type="button" disabled>Conferma chiusura e reset</button>
+      </div>
+      <div id="closeoutMsg" class="msg"></div>
+    </div>
+  </div>
 </body>
 </html>
